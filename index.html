@@ -275,6 +275,21 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .cal-prompt-h span{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--soft);font-weight:600}
 .cal-prompt .bit-in{background:var(--primary-soft);border-color:var(--primary-soft)}
 .cal-prompt .bit-in:focus{border-color:var(--primary)}
+.um-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.um-row .bit-check{width:auto;flex:none;min-width:150px}
+.um-row .bit-in{flex:1;min-width:160px;margin:0}
+.um-files{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:8px 0}
+.um-up{display:inline-flex;align-items:center;gap:5px;background:#fff;border:1.5px solid var(--line);border-radius:10px;padding:7px 11px;font-size:13px;font-weight:600;color:var(--primary);cursor:pointer}
+.um-up:hover{border-color:var(--primary);background:var(--primary-soft)}
+.um-link{font-size:13px;font-weight:600;color:var(--primary);text-decoration:underline}
+.um-thumb{max-width:140px;border-radius:10px;border:1px solid var(--line);display:block;margin-top:4px}
+.um-reel{border:1px solid var(--line);border-radius:11px;padding:9px 10px;margin-bottom:8px}
+.um-reel-grab{border-color:var(--problema);background:var(--problema-bg)}
+.um-reel-h{font-weight:600;font-size:13.5px;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.um-grab-tag{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;color:#fff;background:var(--problema);padding:2px 8px;border-radius:20px}
+.um-hist{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:6px;font-size:13.5px;color:var(--ink)}
+.um-hist:hover{border-color:var(--primary)}
+.um-hist.on{border-color:var(--primary);background:var(--primary-soft)}
 .errbar{position:fixed;top:0;left:0;right:0;z-index:50;background:var(--problema);color:#fff;font-size:13.5px;text-align:center;padding:9px 14px}
 .okbar{position:fixed;top:0;left:0;right:0;z-index:51;background:var(--bien);color:#fff;font-size:13.5px;font-weight:600;text-align:center;padding:9px 14px}
 @media(max-width:560px){
@@ -446,7 +461,8 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         allAgenda:[], people:{}, coordWeekOff:0, coordLoading:false,
         bitDate:null, bitacora:null, bitLoading:false,
         calOpen:false, calClienteId:null, calNombre:"", calCtx:null, calData:[], calLoading:false, calSaving:false, calError:"",
-        calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null, calProgreso:"" };
+        calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null, calProgreso:"",
+        umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[] };
 var root=document.getElementById("root");
 
 function val(id){ var e=document.getElementById(id); return e?e.value:""; }
@@ -527,6 +543,9 @@ async function loadAll(){
   if(ag.error) throw ag.error;
   S.priv.agenda=(ag.data||[]).map(agendaFromDb);
 
+  var um=await sb.from("paquetes_umana").select("cliente_id, fecha_entrega, entregables").eq("cerrado",false);
+  S.umActivos = (um.error)?[]:(um.data||[]);
+
   await refreshClientes(true);
 }
 
@@ -604,6 +623,14 @@ function hoyHTML(){
     var a=attentionForProj(pr);
     if(a) items.push({ name:pr.name, badge:"proyecto", reasons:a.reasons, level:a.level, act:"goto-trabajo" });
   });
+  // Paquetes de Umana activos: reels grabados sin editar + fecha de entrega
+  (S.umActivos||[]).forEach(function(pq){
+    var ee=pq.entregables||{};
+    var cl=(allClientes().filter(function(c){return c.id===pq.cliente_id;})[0]||{}).name||"Paquete";
+    var grab=(ee.reels||[]).filter(function(r){return r.estado==="grabado";}).length;
+    if(grab>0) items.push({ name:cl, badge:"paquete", reasons:[grab+" reel"+(grab===1?"":"s")+" grabado"+(grab===1?"":"s")+" sin editar"], level:2, act:"goto-umana", cid:pq.cliente_id, cname:cl });
+    if(pq.fecha_entrega){ var dr2=dueReason(pq.fecha_entrega); if(dr2) items.push({ name:cl, badge:"paquete", reasons:["Entrega del paquete: "+dr2.text], level:dr2.level, act:"goto-umana", cid:pq.cliente_id, cname:cl }); }
+  });
   // Visitas agendadas ya pasadas y sin contar -> pedir confirmación manual
   (S.priv.agenda||[]).forEach(function(e){
     if(!e.cliente_id || e.contada) return;
@@ -621,6 +648,8 @@ function hoyHTML(){
           ? '<button class="att-action" data-act="quick" data-scope="'+o.scope+'" data-id="'+o.id+'">'+(o.paqueteDue?"Marcar entregado":"Atendido hoy")+'</button>'
           : o.act==="confirm-visit"
           ? '<button class="att-action" data-act="confirm-visit" data-eid="'+o.eid+'" data-cid="'+o.cid+'">Sí, la hice</button>'
+          : o.act==="goto-umana"
+          ? '<button class="att-action" data-act="goto-umana" data-cid="'+o.cid+'" data-name="'+esc(o.cname||"")+'">Ver</button>'
           : '<button class="att-action" data-act="goto-trabajo">Ver</button>';
         return '<li class="att lvl'+o.level+'"><div class="att-bar"></div><div class="att-body"><div class="att-top"><span class="att-name">'+esc(o.name)+'</span><span class="chip ghost">'+o.badge+'</span></div><div class="att-reasons">'+o.reasons.map(function(r){return '<span class="reason">'+esc(r)+'</span>';}).join("")+'</div></div>'+btn+'</li>';
       }).join("")+'</ul>';
@@ -775,6 +804,8 @@ function clientCard(c){
     : '<span class="ed-text" data-act="edit-start" data-kind="client-note" data-scope="'+c.scope+'" data-id="'+c.id+'">'+(c.nota?esc(c.nota):'<span class="ed-ph">Notas del cliente…</span>')+ic("pencil",12,"ed-pencil")+'</span>';
   var esPhoneShop = (c.scope==="compartido" && String(c.name||"").toLowerCase()==="phone shop");
   var calBtn = esPhoneShop ? '<button class="ghost-btn sm" style="margin-top:10px;width:100%;justify-content:center" data-act="cal-open" data-id="'+c.id+'" data-name="'+esc(c.name)+'">'+ic("calendar",14)+' Calendario de contenidos</button>' : '';
+  var esUmana = (c.scope==="compartido" && c.tipo==="paquete" && String(c.name||"").toLowerCase()==="umana");
+  if(esUmana) calBtn = '<button class="ghost-btn sm" style="margin-top:10px;width:100%;justify-content:center" data-act="um-open" data-id="'+c.id+'" data-name="'+esc(c.name)+'">'+ic("briefcase",14)+' Seguimiento del paquete</button>';
   return '<div class="cli estado-'+c.estado+'"><div class="cli-top"><span class="cli-name">'+esc(c.name)+'</span>'+(deletable?'<button class="ic-btn faint" data-act="del-client" data-id="'+c.id+'">'+ic("trash",14)+'</button>':'')+'</div><div class="cli-chips">'+chips+'</div><div class="estado-pills">'+pills+'</div>'+cycle+'<div class="cli-note">'+note+'</div>'+calBtn+'</div>';
 }
 
@@ -1048,6 +1079,153 @@ function calendarioHTML(){
     '</main></div>';
 }
 
+/* ----------------------- seguimiento de paquetes Umana -------------------- */
+var REEL_ESTADOS=[{id:"guion",label:"Guión"},{id:"enviado",label:"Enviado a Umana"},{id:"grabado",label:"Grabado"},{id:"publicado",label:"Publicado"}];
+function umDefault(){
+  var carr=[]; for(var i=0;i<7;i++) carr.push({hecho:false,descripcion:""});
+  var ap=[]; for(var j=0;j<5;j++) ap.push({hecho:false,nota:""});
+  var reels=[]; for(var k=0;k<7;k++) reels.push({estado:"guion"});
+  return { calendario:{hecho:false,pdf_url:"",img_url:""}, carruseles:carr, stories:{propias_total:20,propias_hechas:0,a_pedido:ap,drive_url:""}, reels:reels };
+}
+function umNormalizar(e){
+  if(!e || !e.calendario) return umDefault();
+  var d=umDefault();
+  e.calendario=Object.assign(d.calendario, e.calendario||{});
+  if(!Array.isArray(e.carruseles)) e.carruseles=d.carruseles;
+  e.stories=Object.assign(d.stories, e.stories||{});
+  if(!Array.isArray(e.stories.a_pedido)) e.stories.a_pedido=d.stories.a_pedido;
+  if(!Array.isArray(e.reels)) e.reels=d.reels;
+  return e;
+}
+function umProgress(e){
+  if(!e) return 0;
+  var done=0, total=40;
+  if(e.calendario && e.calendario.hecho) done+=1;
+  (e.carruseles||[]).forEach(function(c){ if(c.hecho) done++; });
+  var st=e.stories||{};
+  done += Math.min(st.propias_total||20, st.propias_hechas||0);
+  (st.a_pedido||[]).forEach(function(a){ if(a.hecho) done++; });
+  (e.reels||[]).forEach(function(r){ if(r.estado==="publicado") done++; });
+  return Math.round(done/total*100);
+}
+async function loadUmana(clienteId, nombre){
+  S.umClienteId=clienteId; S.umNombre=nombre||"Umana";
+  var res=await sb.from("paquetes_umana").select("*").eq("cliente_id",clienteId).order("created_at",{ascending:false});
+  if(res.error){ console.error(res.error); showError("No se pudieron cargar los paquetes."); S.umList=[]; S.umSel=null; return; }
+  S.umList=(res.data||[]).map(function(p){
+    return { id:p.id, fecha_apertura:p.fecha_apertura, fecha_entrega:p.fecha_entrega||"", estado:p.estado, cerrado:!!p.cerrado, entregables:umNormalizar(p.entregables) };
+  });
+  var act=S.umList.filter(function(p){return !p.cerrado;})[0];
+  S.umSel = act || S.umList[0] || null;
+}
+async function openUmana(){
+  var res=await sb.from("paquetes_umana").insert({ cliente_id:S.umClienteId, owner_id:S.user.id, estado:"produccion", cerrado:false, entregables:umDefault() }).select().single();
+  if(res.error){ console.error(res.error); showError("No se pudo abrir el paquete nuevo."); return; }
+  var p=res.data;
+  var obj={ id:p.id, fecha_apertura:p.fecha_apertura, fecha_entrega:p.fecha_entrega||"", estado:p.estado, cerrado:false, entregables:umNormalizar(p.entregables) };
+  S.umList.unshift(obj); S.umSel=obj; render();
+}
+async function saveUmanaSel(){
+  if(!S.umSel) return;
+  var p=S.umSel;
+  var res=await sb.from("paquetes_umana").update({ fecha_entrega:p.fecha_entrega||null, estado:p.estado, cerrado:p.cerrado, entregables:p.entregables }).eq("id",p.id);
+  if(res.error){ console.error(res.error); showError("No se pudo guardar el paquete."); }
+}
+async function umDoUpload(file, campo){
+  if(!S.umSel || !file) return;
+  S.umSaving=true; render();
+  try{
+    var ext=(String(file.name).split(".").pop()||"dat").toLowerCase();
+    var path=S.umClienteId+"/"+S.umSel.id+"/calendario-"+campo+"-"+Date.now()+"."+ext;
+    var up=await sb.storage.from("umana-paquetes").upload(path, file, {upsert:true});
+    if(up.error) throw up.error;
+    var url=sb.storage.from("umana-paquetes").getPublicUrl(path).data.publicUrl;
+    if(campo==="pdf") S.umSel.entregables.calendario.pdf_url=url; else S.umSel.entregables.calendario.img_url=url;
+    await saveUmanaSel();
+  }catch(e){ console.error(e); showError("No se pudo subir el archivo."); }
+  S.umSaving=false; render();
+}
+
+function umanaHTML(){
+  var back='<div class="app"><header class="top"><div class="top-brand"><button class="ghost-btn" data-act="um-close">← volver</button></div>'+(S.umSaving?'<span class="card-sub">guardando…</span>':'')+'</header><main class="main">';
+  var head='<section class="card"><div class="card-head"><span class="card-title">'+ic("briefcase",16)+' Paquetes — '+esc(S.umNombre)+'</span></div>'+
+    '<p class="card-note">Umana cae a demanda, siempre con las mismas cantidades. Abrí un paquete, seguí su avance y cerralo; queda en el historial.</p>';
+  if(S.umLoading){ return back+head+'<p class="card-note">Cargando…</p></section></main></div>'; }
+
+  var hayActivo = S.umList.some(function(p){return !p.cerrado;});
+  head += (!hayActivo ? '<button class="primary-btn" data-act="um-nuevo">'+ic("plus",16)+' Abrir paquete nuevo</button>' : '<p class="hint">Hay un paquete en curso. Cerralo para abrir el siguiente.</p>')+'</section>';
+
+  var detalle="";
+  var p=S.umSel;
+  if(p){
+    var e=p.entregables, prog=umProgress(e);
+    // estado del paquete
+    var estados=[["produccion","En producción"],["entregado","Entregado"],["pagado","Pagado"]];
+    var estadoPills=estados.map(function(o){ return '<button class="bit-pill'+(p.estado===o[0]?" on":"")+'" data-act="um-estado" data-v="'+o[0]+'">'+o[1]+'</button>'; }).join("");
+    var dr=p.fecha_entrega?dueReason(p.fecha_entrega):null;
+    var dueBadge=dr?' <span class="due-badge '+(dr.level===3?"danger":"warn")+'">'+esc(dr.text)+'</span>':'';
+
+    // calendario
+    var cal=e.calendario||{};
+    var calArchivos='<div class="um-files">'+
+      '<label class="um-up">'+ic("plus",13)+' PDF<input type="file" accept="application/pdf" data-act="um-upload" data-campo="pdf" style="display:none" /></label>'+
+      (cal.pdf_url?'<a class="um-link" href="'+esc(cal.pdf_url)+'" target="_blank" rel="noopener">Ver PDF</a><button class="sub-del" data-act="um-delfile" data-campo="pdf">'+ic("x",13)+'</button>':'')+
+      '<label class="um-up">'+ic("plus",13)+' Imagen<input type="file" accept="image/*" data-act="um-upload" data-campo="img" style="display:none" /></label>'+
+      (cal.img_url?'<a class="um-link" href="'+esc(cal.img_url)+'" target="_blank" rel="noopener">Ver imagen</a><button class="sub-del" data-act="um-delfile" data-campo="img">'+ic("x",13)+'</button>':'')+
+      '</div>'+
+      (cal.img_url?'<img class="um-thumb" src="'+esc(cal.img_url)+'" alt="calendario" />':'');
+    var calBlock='<div class="bit-block"><div class="bit-title">Calendario (1)</div>'+
+      bitCheck(!!cal.hecho,"um-cal","","Calendario hecho")+calArchivos+'</div>';
+
+    // carruseles
+    var carrRows=(e.carruseles||[]).map(function(c,i){
+      return '<div class="um-row"><button class="bit-check'+(c.hecho?" on":"")+'" data-act="um-carr" data-i="'+i+'">'+ic(c.hecho?"check2":"circle",18)+'<span>Carrusel '+(i+1)+'</span></button>'+
+        '<input class="bit-in" data-act="um-carr-desc" data-i="'+i+'" placeholder="descripción del carrusel" value="'+esc(c.descripcion||"")+'" /></div>';
+    }).join("");
+    var carrBlock='<div class="bit-block"><div class="bit-title">Carruseles (7)</div>'+carrRows+'</div>';
+
+    // stories
+    var st=e.stories||{};
+    var apRows=(st.a_pedido||[]).map(function(a,i){
+      return '<div class="um-row"><button class="bit-check'+(a.hecho?" on":"")+'" data-act="um-apedido" data-i="'+i+'">'+ic(a.hecho?"check2":"circle",18)+'<span>A pedido '+(i+1)+'</span></button>'+
+        '<input class="bit-in" data-act="um-apedido-nota" data-i="'+i+'" placeholder="¿qué pidió la marca?" value="'+esc(a.nota||"")+'" /></div>';
+    }).join("");
+    var stBlock='<div class="bit-block"><div class="bit-title">Stories (25)</div>'+
+      '<div class="bit-lbl">Propias (20)</div><div class="vis-row"><button class="ic-btn sm" data-act="um-prop" data-dir="-1">–</button><span class="vis-count">'+(st.propias_hechas||0)+' de '+(st.propias_total||20)+' hechas</span><button class="ic-btn sm" data-act="um-prop" data-dir="1">+</button></div>'+
+      '<div class="bit-lbl" style="margin-top:8px">A pedido de la marca (5)</div>'+apRows+
+      '<div class="bit-lbl" style="margin-top:8px">Drive de stories</div><input class="bit-in" data-act="um-drive" placeholder="Pegá el enlace al Drive…" value="'+esc(st.drive_url||"")+'" />'+
+      (st.drive_url?'<a class="um-link" href="'+esc(st.drive_url)+'" target="_blank" rel="noopener">Abrir Drive</a>':'')+'</div>';
+
+    // reels
+    var reelRows=(e.reels||[]).map(function(r,i){
+      var pills=REEL_ESTADOS.map(function(o){ return '<button class="bit-pill'+(r.estado===o.id?" on":"")+'" data-act="um-reel" data-i="'+i+'" data-v="'+o.id+'">'+o.label+'</button>'; }).join("");
+      return '<div class="um-reel'+(r.estado==="grabado"?" um-reel-grab":"")+'"><div class="um-reel-h">Reel '+(i+1)+(r.estado==="grabado"?' <span class="um-grab-tag">'+ic("alert",11)+' material sin editar</span>':'')+'</div><div class="bit-pills">'+pills+'</div></div>';
+    }).join("");
+    var reelBlock='<div class="bit-block"><div class="bit-title">Reels (7)</div><p class="hint" style="margin-bottom:8px">Circuito: guión → enviado a Umana → grabado → publicado. En rojo, los grabados sin editar (donde se acumulan).</p>'+reelRows+'</div>';
+
+    detalle='<section class="card"><div class="card-head"><span class="card-title">'+ic("briefcase",16)+' Paquete del '+esc(p.fecha_apertura)+(p.cerrado?' · cerrado':'')+'</span><span class="card-sub">'+prog+'%</span></div>'+
+      '<div class="bar" style="margin-bottom:12px"><div class="bar-fill" style="width:'+prog+'%"></div></div>'+
+      '<div class="bit-lbl">Estado del paquete</div><div class="bit-pills">'+estadoPills+'</div>'+
+      '<div class="proj-due" style="margin-top:6px"><span class="lbl2">Entrega</span><input class="due-in" type="date" data-act="um-entrega" value="'+(p.fecha_entrega||"")+'" />'+dueBadge+'</div>'+
+      calBlock+carrBlock+stBlock+reelBlock+
+      '<div class="cal-actions" style="margin-top:12px">'+(p.cerrado?'<button class="ghost-btn" data-act="um-reabrir">Reabrir paquete</button>':'<button class="ghost-btn" data-act="um-cerrar">Cerrar paquete</button>')+'</div>'+
+      '</section>';
+  }
+
+  // historial
+  var hist="";
+  var cerrados=S.umList.filter(function(x){return x.cerrado;});
+  if(S.umList.length){
+    hist='<section class="card"><div class="card-head"><span class="card-title">'+ic("calendar",16)+' Historial</span><span class="card-sub">'+S.umList.length+' paquete(s)</span></div>'+
+      S.umList.map(function(x){
+        var sel=(S.umSel && S.umSel.id===x.id);
+        return '<button class="um-hist'+(sel?" on":"")+'" data-act="um-sel" data-id="'+x.id+'"><span>'+esc(x.fecha_apertura)+' · '+(x.cerrado?"cerrado":"en curso")+' · '+x.estado+'</span><span class="pct">'+umProgress(x.entregables)+'%</span></button>';
+      }).join("")+'</section>';
+  }
+
+  return back+head+detalle+hist+'</main></div>';
+}
+
 function appHTML(){
   var me=PROFILES.filter(function(p){return p.id===S.profile;})[0] || PROFILES[0];
   var tabs=[{id:"hoy",label:"Hoy",icon:"bell"},{id:"trabajo",label:S.priv.workspace,icon:"briefcase"}];
@@ -1067,6 +1245,7 @@ function render(){
   if(S.phase==="login") html=loginHTML();
   else if(S.phase==="loading") html=loadingHTML();
   else if(S.calOpen) html=calendarioHTML();
+  else if(S.umOpen) html=umanaHTML();
   else html=appHTML();
   if(S.error) html='<div class="errbar">'+esc(S.error)+'</div>'+html;
   if(S.ok) html='<div class="okbar">'+esc(S.ok)+'</div>'+html;
@@ -1239,6 +1418,20 @@ async function onClick(e){
   if(a==="cal-stock-today"){ S.calStockFecha=keyOf(new Date()); render(); await loadStock(S.calStockFecha); render(); return; }
   if(a==="cal-copy"){ var cc=S.calData[+d.di] && S.calData[+d.di].contenidos && S.calData[+d.di].contenidos[+d.ii]; if(cc){ copyText(cc.prompt_diseno||""); showOk("Prompt copiado ✓"); } return; }
   if(a==="cal-copy-day"){ var cd=S.calData[+d.di]; if(cd){ var txt=(cd.contenidos||[]).filter(function(x){return x.tipo==="story";}).map(function(x,n){return (n+1)+") "+(x.prompt_diseno||"");}).join("\n\n"); copyText(txt); showOk("Prompts del día copiados ✓"); } return; }
+  // --- Umana (seguimiento de paquetes) ---
+  if(a==="um-open" || a==="goto-umana"){ S.umOpen=true; S.umLoading=true; S.umList=[]; S.umSel=null; render(); await loadUmana(d.id||d.cid, d.name); S.umLoading=false; render(); return; }
+  if(a==="um-close"){ S.umOpen=false; render(); return; }
+  if(a==="um-nuevo"){ openUmana(); return; }
+  if(a==="um-sel"){ var sp=S.umList.filter(function(x){return x.id===d.id;})[0]; if(sp){ S.umSel=sp; render(); } return; }
+  if(a==="um-estado"){ if(S.umSel){ S.umSel.estado=d.v; render(); await saveUmanaSel(); } return; }
+  if(a==="um-cerrar"){ if(S.umSel){ S.umSel.cerrado=true; render(); await saveUmanaSel(); } return; }
+  if(a==="um-reabrir"){ if(S.umSel){ S.umSel.cerrado=false; render(); await saveUmanaSel(); } return; }
+  if(a==="um-cal"){ if(S.umSel){ S.umSel.entregables.calendario.hecho=!S.umSel.entregables.calendario.hecho; render(); await saveUmanaSel(); } return; }
+  if(a==="um-carr"){ if(S.umSel){ var ci=+d.i; S.umSel.entregables.carruseles[ci].hecho=!S.umSel.entregables.carruseles[ci].hecho; render(); await saveUmanaSel(); } return; }
+  if(a==="um-apedido"){ if(S.umSel){ var ai=+d.i; S.umSel.entregables.stories.a_pedido[ai].hecho=!S.umSel.entregables.stories.a_pedido[ai].hecho; render(); await saveUmanaSel(); } return; }
+  if(a==="um-prop"){ if(S.umSel){ var st=S.umSel.entregables.stories; st.propias_hechas=Math.max(0,Math.min(st.propias_total||20,(st.propias_hechas||0)+(d.dir==="1"?1:-1))); render(); await saveUmanaSel(); } return; }
+  if(a==="um-reel"){ if(S.umSel){ S.umSel.entregables.reels[+d.i].estado=d.v; render(); await saveUmanaSel(); } return; }
+  if(a==="um-delfile"){ if(S.umSel){ if(d.campo==="pdf") S.umSel.entregables.calendario.pdf_url=""; else S.umSel.entregables.calendario.img_url=""; render(); await saveUmanaSel(); } return; }
 
   // recurrentes
   if(a==="toggle-rec"){ var r=findRec(d.id); if(r){ r.done=!r.done; render(); await saveRow("recurrentes",r.id,{done:r.done}); } return; }
@@ -1323,6 +1516,11 @@ async function onChange(e){
   else if(a==="cal-tema"){ S.calTema=t.value; await saveCalendarioDB(); }
   else if(a==="cal-daytema"){ var tdi=+d.di; if(S.calData[tdi]){ S.calData[tdi].tema_del_dia=t.value; var tres=await sb.from("cliente_calendario").upsert({cliente_id:S.calClienteId, dias:S.calData, tema:S.calTema}, {onConflict:"cliente_id"}); if(tres.error){ console.error(tres.error); showError("No se pudo guardar."); } } }
   else if(a==="cal-item"){ var cdi=+d.di, cii=+d.ii; if(S.calData[cdi] && S.calData[cdi].contenidos && S.calData[cdi].contenidos[cii]){ var cv=t.value; if(d.f==="momento" && cv==="") cv=null; S.calData[cdi].contenidos[cii][d.f]=cv; var cres=await sb.from("cliente_calendario").upsert({cliente_id:S.calClienteId, dias:S.calData}, {onConflict:"cliente_id"}); if(cres.error){ console.error(cres.error); showError("No se pudo guardar el calendario."); } } }
+  else if(a==="um-carr-desc"){ if(S.umSel){ S.umSel.entregables.carruseles[+d.i].descripcion=t.value; await saveUmanaSel(); } }
+  else if(a==="um-apedido-nota"){ if(S.umSel){ S.umSel.entregables.stories.a_pedido[+d.i].nota=t.value; await saveUmanaSel(); } }
+  else if(a==="um-drive"){ if(S.umSel){ S.umSel.entregables.stories.drive_url=t.value; await saveUmanaSel(); render(); } }
+  else if(a==="um-entrega"){ if(S.umSel){ S.umSel.fecha_entrega=t.value; render(); await saveUmanaSel(); } }
+  else if(a==="um-upload"){ var uf=t.files&&t.files[0]; if(uf){ await umDoUpload(uf, d.campo); } }
 }
 
 document.addEventListener("click", onClick);
