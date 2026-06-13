@@ -1,0 +1,8 @@
+# Configuración de Netlify para Quilombo cero
+# Indica dónde están las funciones serverless para que Netlify las publique.
+[build]
+  publish = "."
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
