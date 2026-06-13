@@ -446,7 +446,7 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         allAgenda:[], people:{}, coordWeekOff:0, coordLoading:false,
         bitDate:null, bitacora:null, bitLoading:false,
         calOpen:false, calClienteId:null, calNombre:"", calCtx:null, calData:[], calLoading:false, calSaving:false, calError:"",
-        calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null };
+        calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null, calProgreso:"" };
 var root=document.getElementById("root");
 
 function val(id){ var e=document.getElementById(id); return e?e.value:""; }
@@ -949,35 +949,39 @@ async function saveCalendarioDB(){
   render();
 }
 async function generarCalendario(){
-  S.calLoading=true; S.calError=""; render();
+  S.calLoading=true; S.calError=""; S.calData=[]; S.calProgreso=""; render();
   await saveContexto();
-  try{
-    var r=await fetch("/.netlify/functions/generar-calendario", {
-      method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ contexto:S.calCtx, stock:S.calStockTexto, tema:S.calTema, semana:"" })
-    });
-    var raw=""; try{ raw=await r.text(); }catch(e){}
-    var data=null; try{ data=JSON.parse(raw); }catch(e){}
-    if(!r.ok){
-      S.calLoading=false;
-      S.calError = (data&&data.error) ? data.error : ("No se pudo generar (HTTP "+r.status+"). "+(raw?raw.slice(0,160):"sin respuesta del servidor"));
-      render(); return;
-    }
-    if(!data || !Array.isArray(data.dias)){
-      S.calLoading=false;
-      S.calError = "El generador respondió pero sin un calendario válido (HTTP "+r.status+"). "+(raw?raw.slice(0,160):"");
-      render(); return;
-    }
-    S.calData = data.dias;
-    if(!S.calTema && data.tema_semana) S.calTema=data.tema_semana;
-    S.calLoading=false; render();
-    await saveCalendarioDB();
-  }catch(e){
-    console.error(e);
-    S.calLoading=false;
-    S.calError="No se pudo conectar con el generador. Esto funciona en el sitio publicado en Netlify, no abriendo el archivo local.";
-    render();
+  var dias=["lunes","martes","miércoles","jueves","viernes","sábado"];
+  var tema=S.calTema, previos=[], fallos=[];
+  for(var i=0;i<dias.length;i++){
+    S.calProgreso="("+(i+1)+"/"+dias.length+") "+dias[i]+"…"; render();
+    var ok=false;
+    try{
+      var r=await fetch("/.netlify/functions/generar-calendario", {
+        method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({ contexto:S.calCtx, stock:S.calStockTexto, tema:tema, dia:dias[i], previos:previos, proponer_tema:(!tema && i===0) })
+      });
+      var raw=""; try{ raw=await r.text(); }catch(e){}
+      var data=null; try{ data=JSON.parse(raw); }catch(e){}
+      if(r.ok && data && Array.isArray(data.contenidos)){
+        if(!tema && data.tema_semana){ tema=data.tema_semana; S.calTema=tema; }
+        var diaObj={ dia:dias[i], tema_del_dia:data.tema_del_dia||"", contenidos:data.contenidos };
+        S.calData.push(diaObj);
+        previos.push({ dia:dias[i], tema_del_dia:diaObj.tema_del_dia });
+        ok=true; render();
+      } else if(r.status===504 || (raw && /timeout/i.test(raw))){
+        fallos.push(dias[i]+" (tardó de más)");
+      } else {
+        fallos.push(dias[i]+(data&&data.error?(" — "+data.error):(" (HTTP "+r.status+")")));
+      }
+    }catch(e){ console.error(e); fallos.push(dias[i]+" (sin conexión)"); }
   }
+  S.calLoading=false; S.calProgreso="";
+  if(S.calData.length){ await saveCalendarioDB(); }
+  if(fallos.length){
+    S.calError="No se pudieron generar: "+fallos.join("; ")+". Tocá Regenerar para reintentar esos días.";
+  }
+  render();
 }
 function calendarioHTML(){
   var ctx=S.calCtx||{rubros:"",objetivos:"",reglas:"",tono:"",notas:""};
@@ -1001,13 +1005,13 @@ function calendarioHTML(){
   var temaField='<label class="bit-lbl">Tema de la semana</label><input class="bit-in" data-act="cal-tema" placeholder="Escribí un eje para la semana, o dejalo vacío para que lo proponga la IA" value="'+esc(S.calTema)+'" />';
 
   var acciones='<div class="cal-actions">'+
-    '<button class="primary-btn" data-act="cal-generar"'+(S.calLoading?' disabled':'')+'>'+(S.calLoading?"Generando…":(S.calData.length?"Regenerar semana":"Generar semana"))+'</button>'+
+    '<button class="primary-btn" data-act="cal-generar"'+(S.calLoading?' disabled':'')+'>'+(S.calLoading?("Generando… "+esc(S.calProgreso)):(S.calData.length?"Regenerar semana":"Generar semana"))+'</button>'+
     (S.calData.length?'<button class="ghost-btn" data-act="cal-guardar"'+(S.calSaving?' disabled':'')+'>'+(S.calSaving?"Guardando…":"Guardar calendario")+'</button>':'')+
     '</div>'+
     (S.calError?'<p class="pw-err" style="margin-top:8px">'+esc(S.calError)+'</p>':'');
 
   var grid="";
-  if(S.calLoading){ grid='<p class="card-note">La IA está armando la semana… puede tardar unos segundos.</p>'; }
+  if(S.calLoading && !S.calData.length){ grid='<p class="card-note">La IA está armando la semana, día por día '+esc(S.calProgreso)+'… ya van a ir apareciendo.</p>'; }
   else if(!S.calData.length){ grid='<p class="empty">Todavía no generaste el calendario. Tocá “Generar semana”.</p>'; }
   else {
     grid=S.calData.map(function(d,di){
