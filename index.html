@@ -195,6 +195,13 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .vis-row{display:flex;align-items:center;gap:12px}
 .vis-count{font-size:13.5px;font-weight:500}
 .cli-note{font-size:13.5px;color:var(--ink);line-height:1.5}
+.cli-badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap;font-family:var(--head)}
+.cli-badge.p-bien{background:var(--bien-bg);color:var(--bien)}
+.cli-badge.p-atencion{background:var(--atencion-bg);color:var(--atencion)}
+.cli-badge.p-problema{background:var(--problema-bg);color:var(--problema)}
+.cli-note-short{font-size:13px;color:var(--soft);line-height:1.45;margin:2px 0 12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cli-note-short.empty-note{font-style:italic}
+.cli-ver{width:100%;justify-content:center}
 
 .ed-text{cursor:text;border-radius:6px;display:inline-block;width:100%}
 .ed-text:hover{background:var(--paper)}
@@ -462,7 +469,8 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         bitDate:null, bitacora:null, bitLoading:false,
         calOpen:false, calClienteId:null, calNombre:"", calCtx:null, calData:[], calLoading:false, calSaving:false, calError:"",
         calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null, calProgreso:"",
-        umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[] };
+        umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[],
+        cliOpen:false, cliScope:null, cliId:null };
 var root=document.getElementById("root");
 
 function val(id){ var e=document.getElementById(id); return e?e.value:""; }
@@ -783,7 +791,22 @@ function trabajoHTML(){
     '<div class="add-inline"><input id="add-proj" placeholder="Sumar un proyecto…" /><button class="ghost-btn" data-act="add-proj">'+ic("plus",15)+' Agregar</button></div></section>';
 }
 
+// Tarjeta compacta y pareja para todos: nombre, tipo, estado, nota corta + "Ver cliente".
 function clientCard(c){
+  var estadoLabel = (ESTADOS.filter(function(e){return e.id===c.estado;})[0]||{}).label || c.estado;
+  return '<div class="cli estado-'+c.estado+'">'+
+    '<div class="cli-top"><span class="cli-name">'+esc(c.name)+'</span><span class="cli-badge p-'+c.estado+'">'+esc(estadoLabel)+'</span></div>'+
+    '<div class="cli-chips"><span class="chip">'+TIPO_LABEL[c.tipo]+'</span>'+(c.silencioso?'<span class="chip warn">silencioso</span>':'')+'</div>'+
+    (c.nota?'<div class="cli-note-short">'+esc(c.nota)+'</div>':'<div class="cli-note-short empty-note">Sin notas todavía</div>')+
+    '<button class="ghost-btn sm cli-ver" data-act="cli-open" data-scope="'+c.scope+'" data-id="'+c.id+'">'+ic("user",14)+' Ver cliente</button>'+
+    '</div>';
+}
+
+// Ficha de detalle: acá vive TODO lo específico del cliente.
+function clienteDetalleHTML(){
+  var base=findClient(S.cliScope, S.cliId);
+  if(!base){ S.cliOpen=false; return appHTML(); }
+  var c=Object.assign({}, base); c.scope=S.cliScope;
   var deletable = c.scope==="mio";
   var chips='<span class="chip">'+TIPO_LABEL[c.tipo]+'</span>'+(c.silencioso?'<span class="chip warn">silencioso</span>':'');
   var pills=ESTADOS.map(function(e){
@@ -803,10 +826,22 @@ function clientCard(c){
     ? '<div class="ed-wrap"><textarea class="ed-in" id="edit-input" rows="3">'+esc(c.nota)+'</textarea><div class="ed-btns"><button class="ic-btn good" data-act="edit-save">'+ic("check",15)+'</button><button class="ic-btn" data-act="edit-cancel">'+ic("x",15)+'</button></div></div>'
     : '<span class="ed-text" data-act="edit-start" data-kind="client-note" data-scope="'+c.scope+'" data-id="'+c.id+'">'+(c.nota?esc(c.nota):'<span class="ed-ph">Notas del cliente…</span>')+ic("pencil",12,"ed-pencil")+'</span>';
   var esPhoneShop = (c.scope==="compartido" && String(c.name||"").toLowerCase()==="phone shop");
-  var calBtn = esPhoneShop ? '<button class="ghost-btn sm" style="margin-top:10px;width:100%;justify-content:center" data-act="cal-open" data-id="'+c.id+'" data-name="'+esc(c.name)+'">'+ic("calendar",14)+' Calendario de contenidos</button>' : '';
   var esUmana = (c.scope==="compartido" && c.tipo==="paquete" && String(c.name||"").toLowerCase()==="umana");
-  if(esUmana) calBtn = '<button class="ghost-btn sm" style="margin-top:10px;width:100%;justify-content:center" data-act="um-open" data-id="'+c.id+'" data-name="'+esc(c.name)+'">'+ic("briefcase",14)+' Seguimiento del paquete</button>';
-  return '<div class="cli estado-'+c.estado+'"><div class="cli-top"><span class="cli-name">'+esc(c.name)+'</span>'+(deletable?'<button class="ic-btn faint" data-act="del-client" data-id="'+c.id+'">'+ic("trash",14)+'</button>':'')+'</div><div class="cli-chips">'+chips+'</div><div class="estado-pills">'+pills+'</div>'+cycle+'<div class="cli-note">'+note+'</div>'+calBtn+'</div>';
+  var extra="";
+  if(esPhoneShop) extra='<button class="ghost-btn" style="margin-top:6px;width:100%;justify-content:center" data-act="cal-open" data-id="'+c.id+'" data-name="'+esc(c.name)+'">'+ic("calendar",14)+' Calendario de contenidos</button>';
+  if(esUmana) extra='<button class="ghost-btn" style="margin-top:6px;width:100%;justify-content:center" data-act="um-open" data-id="'+c.id+'" data-name="'+esc(c.name)+'">'+ic("briefcase",14)+' Seguimiento del paquete</button>';
+  var scopeChip='<span class="chip ghost">'+(c.scope==="compartido"?"compartido":"tuyo")+'</span>';
+  return '<div class="app"><header class="top"><div class="top-brand"><button class="ghost-btn" data-act="cli-close">← volver</button></div>'+
+    (deletable?'<button class="ic-btn faint" data-act="del-client" data-id="'+c.id+'" title="Eliminar cliente">'+ic("trash",16)+'</button>':'')+
+    '</header><main class="main">'+
+    '<section class="card cli estado-'+c.estado+'">'+
+      '<div class="cli-top"><span class="cli-name" style="font-size:20px">'+esc(c.name)+'</span>'+scopeChip+'</div>'+
+      '<div class="cli-chips">'+chips+'</div>'+
+      '<div class="bit-lbl">Estado</div><div class="estado-pills">'+pills+'</div>'+
+      cycle+
+      '<div class="bit-lbl" style="margin-top:10px">Notas</div><div class="cli-note">'+note+'</div>'+
+      extra+
+    '</section></main></div>';
 }
 
 function clientesHTML(){
@@ -1246,6 +1281,7 @@ function render(){
   else if(S.phase==="loading") html=loadingHTML();
   else if(S.calOpen) html=calendarioHTML();
   else if(S.umOpen) html=umanaHTML();
+  else if(S.cliOpen) html=clienteDetalleHTML();
   else html=appHTML();
   if(S.error) html='<div class="errbar">'+esc(S.error)+'</div>'+html;
   if(S.ok) html='<div class="okbar">'+esc(S.ok)+'</div>'+html;
@@ -1470,8 +1506,10 @@ async function onClick(e){
     if(cvc) await saveRow("clientes", d.cid, { visitas_hechas:nuevo });
     return;
   }
-  if(a==="del-client"){ S.priv.clientes=S.priv.clientes.filter(function(x){return x.id!==d.id;}); render(); await deleteRow("clientes",d.id); return; }
+  if(a==="del-client"){ S.priv.clientes=S.priv.clientes.filter(function(x){return x.id!==d.id;}); S.cliOpen=false; S.editing=null; render(); await deleteRow("clientes",d.id); return; }
   if(a==="add-client"){ addNewClient(); return; }
+  if(a==="cli-open"){ S.cliOpen=true; S.cliScope=d.scope; S.cliId=d.id; S.editing=null; render(); return; }
+  if(a==="cli-close"){ S.cliOpen=false; S.editing=null; render(); return; }
 
   // edición inline
   if(a==="edit-start"){ S.editing={kind:d.kind,id:d.id,scope:d.scope||null}; render(); return; }
