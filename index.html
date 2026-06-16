@@ -313,6 +313,17 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .cal-prompt-h span{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--soft);font-weight:600}
 .cal-prompt .bit-in{background:var(--primary-soft);border-color:var(--primary-soft)}
 .cal-prompt .bit-in:focus{border-color:var(--primary)}
+.cal-hecho{background:none;border:none;color:var(--primary);padding:0;display:flex;flex:none;cursor:pointer}
+.cal-hecho.on{color:var(--bien)}
+.cal-item.done{opacity:.7}
+.cal-item.done .bit-in,.cal-item.done .cal-mini{text-decoration:line-through}
+.boox-galeria{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:10px}
+.boox-pieza{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:#fff}
+.boox-pieza img{width:100%;height:130px;object-fit:cover;display:block}
+.boox-noimg{height:130px;display:flex;align-items:center;justify-content:center;color:var(--soft);background:var(--paper);font-size:13px}
+.boox-pieza-b{padding:9px 11px}
+.boox-pieza-t{font-weight:600;font-size:13.5px}
+.boox-pieza-b .cobro-tools{margin-top:6px}
 .um-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
 .um-row .bit-check{width:auto;flex:none;min-width:150px}
 .um-row .bit-in{flex:1;min-width:160px;margin:0}
@@ -516,7 +527,8 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[],
         cliOpen:false, cliScope:null, cliId:null,
         cobros:[], pagos:[], cobroHist:null,
-        plataSub:"cobros", cobroForm:null, gastos:[], gastoForm:null, ahorro:{meta:0,guardado:0} };
+        plataSub:"cobros", cobroForm:null, gastos:[], gastoForm:null, ahorro:{meta:0,guardado:0},
+        booxClienteId:null, booxSub:"resumen", booxPlanes:[], booxItems:[], booxLoading:false, booxPlanForm:null, booxItemForm:null, booxPend:0 };
 var root=document.getElementById("root");
 
 function val(id){ var e=document.getElementById(id); return e?e.value:""; }
@@ -603,6 +615,7 @@ async function loadAll(){
   await loadCobros();
   await loadGastos();
   await loadAhorro();
+  await ensureBoox();
 
   await refreshClientes(true);
 }
@@ -695,6 +708,8 @@ function hoyHTML(){
     if(co.tipo==="mensual" && !rc.pagadoMes && rc.proxFecha){ var drc=dueReason(rc.proxFecha); if(drc) items.push({ name:co.nombre, badge:"cobro", reasons:["Cobro "+drc.text+" · "+plata(rc.proxMonto)], level:drc.level, act:"goto-plata" }); }
     else if(co.tipo==="paquete" && rc.saldo>0){ items.push({ name:co.nombre, badge:"cobro", reasons:["Saldo pendiente: "+plata(rc.saldo)], level:1, act:"goto-plata" }); }
   });
+  // Boox: recordatorio suave de no descuidar la propia cuenta
+  if((S.booxPend||0)>0) items.push({ name:"Boox", badge:"agencia", reasons:["Te quedan "+S.booxPend+" posts sin publicar esta semana"], level:1, act:"goto-boox" });
   // Visitas agendadas ya pasadas y sin contar -> pedir confirmación manual
   (S.priv.agenda||[]).forEach(function(e){
     if(!e.cliente_id || e.contada) return;
@@ -716,6 +731,8 @@ function hoyHTML(){
           ? '<button class="att-action" data-act="goto-umana" data-cid="'+o.cid+'" data-name="'+esc(o.cname||"")+'">Ver</button>'
           : o.act==="goto-plata"
           ? '<button class="att-action" data-act="goto-plata">Ver</button>'
+          : o.act==="goto-boox"
+          ? '<button class="att-action" data-act="goto-boox">Ver</button>'
           : '<button class="att-action" data-act="goto-trabajo">Ver</button>';
         return '<li class="att lvl'+o.level+'"><div class="att-bar"></div><div class="att-body"><div class="att-top"><span class="att-name">'+esc(o.name)+'</span><span class="chip ghost">'+o.badge+'</span></div><div class="att-reasons">'+o.reasons.map(function(r){return '<span class="reason">'+esc(r)+'</span>';}).join("")+'</div></div>'+btn+'</li>';
       }).join("")+'</ul>';
@@ -903,7 +920,7 @@ function clienteDetalleHTML(){
 }
 
 function clientesHTML(){
-  var sh=S.shared.clientes.map(function(c){ var o=Object.assign({},c); o.scope="compartido"; return o; });
+  var sh=S.shared.clientes.filter(function(c){return c.id!==S.booxClienteId;}).map(function(c){ var o=Object.assign({},c); o.scope="compartido"; return o; });
   var mi=S.priv.clientes.map(function(c){ var o=Object.assign({},c); o.scope="mio"; return o; });
   return '<section class="card"><div class="card-head"><span class="card-title">'+ic("users",16)+' Compartidos con la otra</span><span class="card-sub">lo ven las dos</span></div><div class="cli-grid">'+sh.map(clientCard).join("")+'</div></section>'+
     '<section class="card"><div class="card-head"><span class="card-title">'+ic("user",16)+' Tuyos</span><span class="card-sub">solo los ves vos</span></div><div class="cli-grid">'+(mi.map(clientCard).join("")||'<div class="empty">Todavía no tenés clientes propios cargados.</div>')+'</div>'+
@@ -1031,7 +1048,14 @@ var CAL_TIPOS=["story","reel","carrusel"];
 var CAL_OBJ=["vender","alcance","comunidad"];
 async function loadCalendarioFicha(clienteId, nombre){
   S.calClienteId=clienteId; S.calNombre=nombre; S.calError="";
-  var defaults={
+  var esBoox=(clienteId===S.booxClienteId);
+  var defaults = esBoox ? {
+    objetivos:"Conseguir clientes: posicionarnos como agencia experta, generar confianza y atraer marcas.",
+    rubros:"Amplio por ahora: comercios, pymes y marcas (a afinar).",
+    notas:"",
+    tono:"Identidad Boox: canchero, fresco, profesional pero con onda.",
+    reglas:"• Contenido de valor / tips de redes (mostrarnos expertas)\n• Prueba social: nuestros trabajos y casos\n• Detrás de escena / humanizar (las dos socias)\n• Llamados a la acción: \"trabajá con nosotras\", servicios"
+  } : {
     rubros:"Celulares, electrodomésticos, televisores, juguetes, tecnología, servicio técnico, tablets, accesorios (cargadores, fundas, soportes para moto, etc.).",
     objetivos:"Vender y aumentar alcance.",
     reglas:"Todos los días una story a las 08:00 \"buen día, ya abrimos\" con la dirección. De lunes a sábado, 6 stories diarias que ayuden a vender o ganar alcance.",
@@ -1083,7 +1107,7 @@ async function generarCalendario(){
     try{
       var r=await fetch("/.netlify/functions/generar-calendario", {
         method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({ contexto:S.calCtx, stock:S.calStockTexto, tema:tema, dia:dias[i], previos:previos, proponer_tema:(!tema && i===0) })
+        body: JSON.stringify({ contexto:S.calCtx, stock:S.calStockTexto, tema:tema, dia:dias[i], previos:previos, proponer_tema:(!tema && i===0), perfil:(S.calClienteId===S.booxClienteId?"boox":"phoneshop") })
       });
       var raw=""; try{ raw=await r.text(); }catch(e){}
       var data=null; try{ data=JSON.parse(raw); }catch(e){}
@@ -1109,13 +1133,22 @@ async function generarCalendario(){
 }
 function calendarioHTML(){
   var ctx=S.calCtx||{rubros:"",objetivos:"",reglas:"",tono:"",notas:""};
-  var ficha='<section class="card"><div class="card-head"><span class="card-title">'+ic("pencil",16)+' Ficha de contexto</span></div>'+
-    '<p class="card-note">Esto alimenta a la IA. Editá y se guarda solo al salir de cada campo.</p>'+
-    '<div class="cal-ctx"><label class="bit-lbl">Rubros / catálogo</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="rubros">'+esc(ctx.rubros)+'</textarea>'+
-    '<label class="bit-lbl">Objetivos</label><input class="bit-in" data-act="cal-ctx" data-k="objetivos" value="'+esc(ctx.objetivos)+'" />'+
-    '<label class="bit-lbl">Reglas fijas</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="reglas">'+esc(ctx.reglas)+'</textarea>'+
-    '<label class="bit-lbl">Tono de marca</label><input class="bit-in" data-act="cal-ctx" data-k="tono" placeholder="Ej: cercano, vendedor, con humor…" value="'+esc(ctx.tono)+'" />'+
-    '<label class="bit-lbl">Qué funciona / qué no</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="notas" placeholder="Notas de aprendizaje…">'+esc(ctx.notas)+'</textarea></div></section>';
+  var esBoox=(S.calClienteId===S.booxClienteId);
+  var ficha = esBoox
+    ? '<section class="card"><div class="card-head"><span class="card-title">'+ic("pencil",16)+' Estrategia de Boox</span></div>'+
+      '<p class="card-note">Esto alimenta a la IA. Editá y se guarda solo al salir de cada campo.</p>'+
+      '<div class="cal-ctx"><label class="bit-lbl">Objetivo</label><input class="bit-in" data-act="cal-ctx" data-k="objetivos" value="'+esc(ctx.objetivos)+'" />'+
+      '<label class="bit-lbl">A quién le hablan (público)</label><input class="bit-in" data-act="cal-ctx" data-k="rubros" value="'+esc(ctx.rubros)+'" />'+
+      '<label class="bit-lbl">Propuesta de valor / qué nos hace distintas</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="notas" placeholder="Lo que las diferencia…">'+esc(ctx.notas)+'</textarea>'+
+      '<label class="bit-lbl">Tono</label><input class="bit-in" data-act="cal-ctx" data-k="tono" value="'+esc(ctx.tono)+'" />'+
+      '<label class="bit-lbl">Pilares de contenido</label><textarea class="bit-in" rows="4" data-act="cal-ctx" data-k="reglas">'+esc(ctx.reglas)+'</textarea></div></section>'
+    : '<section class="card"><div class="card-head"><span class="card-title">'+ic("pencil",16)+' Ficha de contexto</span></div>'+
+      '<p class="card-note">Esto alimenta a la IA. Editá y se guarda solo al salir de cada campo.</p>'+
+      '<div class="cal-ctx"><label class="bit-lbl">Rubros / catálogo</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="rubros">'+esc(ctx.rubros)+'</textarea>'+
+      '<label class="bit-lbl">Objetivos</label><input class="bit-in" data-act="cal-ctx" data-k="objetivos" value="'+esc(ctx.objetivos)+'" />'+
+      '<label class="bit-lbl">Reglas fijas</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="reglas">'+esc(ctx.reglas)+'</textarea>'+
+      '<label class="bit-lbl">Tono de marca</label><input class="bit-in" data-act="cal-ctx" data-k="tono" placeholder="Ej: cercano, vendedor, con humor…" value="'+esc(ctx.tono)+'" />'+
+      '<label class="bit-lbl">Qué funciona / qué no</label><textarea class="bit-in" rows="2" data-act="cal-ctx" data-k="notas" placeholder="Notas de aprendizaje…">'+esc(ctx.notas)+'</textarea></div></section>';
 
   var stockHoy=(S.calStockFecha===keyOf(new Date()));
   var upd = S.calStockUpdated ? new Date(S.calStockUpdated) : null;
@@ -1146,7 +1179,9 @@ function calendarioHTML(){
           ? '<div class="cal-prompt"><div class="cal-prompt-h"><span>Prompt para ChatGPT</span><button class="ghost-btn sm" data-act="cal-copy" data-di="'+di+'" data-ii="'+ii+'">Copiar</button></div>'+
             '<textarea class="bit-in" rows="3" data-act="cal-item" data-di="'+di+'" data-ii="'+ii+'" data-f="prompt_diseno" placeholder="Prompt en español para diseñar esta story…">'+esc(it.prompt_diseno||"")+'</textarea></div>'
           : '';
-        return '<div class="cal-item"><div class="cal-item-top">'+tipoSel+
+        return '<div class="cal-item'+(it.hecho?" done":"")+'"><div class="cal-item-top">'+
+          '<button class="cal-hecho'+(it.hecho?" on":"")+'" data-act="cal-hecho" data-di="'+di+'" data-ii="'+ii+'" title="Marcar como publicado">'+ic(it.hecho?"check2":"circle",16)+'</button>'+
+          tipoSel+
           '<input class="cal-mini t" data-act="cal-item" data-di="'+di+'" data-ii="'+ii+'" data-f="momento" placeholder="hora" value="'+esc(it.momento==null?"":it.momento)+'" />'+
           objSel+'<button class="sub-del" data-act="cal-del-item" data-di="'+di+'" data-ii="'+ii+'">'+ic("x",13)+'</button></div>'+
           '<input class="bit-in" data-act="cal-item" data-di="'+di+'" data-ii="'+ii+'" data-f="rubro" placeholder="rubro" value="'+esc(it.rubro||"")+'" />'+
@@ -1167,7 +1202,7 @@ function calendarioHTML(){
     '<main class="main"><section class="card"><div class="card-head"><span class="card-title">'+ic("calendar",16)+' Calendario de contenidos — '+esc(S.calNombre)+'</span></div>'+
     '<p class="card-note">Generá la semana con IA, editá lo que quieras y guardá. Lo ven las dos.</p>'+acciones+'</section>'+
     ficha+
-    stockCard+
+    (esBoox?"":stockCard)+
     '<section class="card"><div class="card-head"><span class="card-title">'+ic("calendar",16)+' Semana</span><span class="card-sub">lunes a sábado</span></div>'+temaField+grid+'</section>'+
     '</main></div>';
 }
@@ -1594,6 +1629,139 @@ function plataHTML(){
   return dash+nav+cont;
 }
 
+/* ---------------------------------- Boox ---------------------------------- */
+async function ensureBoox(){
+  var f=await sb.from("clientes").select("id").eq("is_shared",true).ilike("name","boox").maybeSingle();
+  if(f.data){ S.booxClienteId=f.data.id; }
+  else {
+    var ins=await sb.from("clientes").insert({owner_id:S.user.id, is_shared:true, name:"Boox", tipo:"360", estado:"bien", nota:"Cuenta propia de la agencia"}).select("id").single();
+    if(ins.error){ console.error(ins.error); } else S.booxClienteId=ins.data.id;
+  }
+  if(S.booxClienteId){
+    var k=await sb.from("cliente_calendario").select("dias").eq("cliente_id",S.booxClienteId).maybeSingle();
+    var pend=0;
+    if(k.data && Array.isArray(k.data.dias)){ k.data.dias.forEach(function(d){ (d.contenidos||[]).forEach(function(c){ if(!c.hecho) pend++; }); }); }
+    S.booxPend=pend;
+  }
+}
+async function loadBoox(){
+  S.booxLoading=true;
+  var p=await sb.from("boox_planes").select("*").order("orden",{ascending:true}).order("created_at",{ascending:true});
+  var i=await sb.from("boox_items").select("*").order("orden",{ascending:true}).order("created_at",{ascending:true});
+  S.booxPlanes=(p.error)?[]:(p.data||[]);
+  S.booxItems=(i.error)?[]:(i.data||[]);
+  S.booxLoading=false;
+}
+async function guardarPlan(){
+  var nombre=val("bp-nombre").trim(); if(!nombre){ showError("Poné un nombre."); return; }
+  var row={ nombre:nombre, precio:val("bp-precio").trim(), recurrencia:val("bp-recurrencia")||"mensual", incluye:val("bp-incluye").trim() };
+  var res = (S.booxPlanForm&&S.booxPlanForm.id) ? await sb.from("boox_planes").update(row).eq("id",S.booxPlanForm.id) : await sb.from("boox_planes").insert(row);
+  if(res.error){ console.error(res.error); showError("No se pudo guardar el plan."); return; }
+  S.booxPlanForm=null; await loadBoox(); render(); showOk("Plan guardado ✓");
+}
+async function deletePlan(id){ if(!window.confirm("¿Borrar este plan?")) return; var r=await sb.from("boox_planes").delete().eq("id",id); if(r.error){ showError("No se pudo borrar."); return; } await loadBoox(); render(); }
+async function guardarItem(){
+  var f=S.booxItemForm;
+  var row={ tipo:f.tipo, titulo:val("bi-titulo").trim(), detalle:val("bi-detalle").trim(), url:val("bi-url")?val("bi-url").trim():"", img_url:f.img_url||"" };
+  var res = f.id ? await sb.from("boox_items").update(row).eq("id",f.id) : await sb.from("boox_items").insert(row);
+  if(res.error){ console.error(res.error); showError("No se pudo guardar."); return; }
+  S.booxItemForm=null; await loadBoox(); render(); showOk("Guardado ✓");
+}
+async function deleteItem(id){ if(!window.confirm("¿Borrar este elemento?")) return; var r=await sb.from("boox_items").delete().eq("id",id); if(r.error){ showError("No se pudo borrar."); return; } await loadBoox(); render(); }
+async function booxUpload(file){
+  if(!file || !S.booxItemForm) return;
+  S.booxLoading=true; render();
+  try{
+    var ext=(String(file.name).split(".").pop()||"jpg").toLowerCase();
+    var path="portfolio/"+Date.now()+"."+ext;
+    var up=await sb.storage.from("boox").upload(path, file, {upsert:true});
+    if(up.error) throw up.error;
+    S.booxItemForm.img_url=sb.storage.from("boox").getPublicUrl(path).data.publicUrl;
+  }catch(e){ console.error(e); showError("No se pudo subir la imagen."); }
+  S.booxLoading=false; render();
+}
+var BOOX_RECUR=[["mensual","Mensual"],["paquete","Por paquete"],["a medida","A medida"]];
+function booxPlanFormHTML(){
+  var f=S.booxPlanForm; if(!f) return "";
+  var opR=BOOX_RECUR.map(function(o){return '<option value="'+o[0]+'"'+(f.recurrencia===o[0]?" selected":"")+'>'+o[1]+'</option>';}).join("");
+  return '<section class="card"><div class="card-head"><span class="card-title">'+(f.id?'Editar plan':'Nuevo plan')+'</span></div><div class="form-grid">'+
+    '<label class="bit-lbl">Nombre</label><input class="bit-in" id="bp-nombre" value="'+esc(f.nombre||"")+'" />'+
+    '<label class="bit-lbl">Precio</label><input class="bit-in" id="bp-precio" value="'+esc(f.precio||"")+'" placeholder="ej $X o a convenir" />'+
+    '<label class="bit-lbl">Recurrencia</label><select class="bit-in" id="bp-recurrencia">'+opR+'</select>'+
+    '<label class="bit-lbl">Qué incluye</label><textarea class="bit-in" id="bp-incluye" rows="3">'+esc(f.incluye||"")+'</textarea>'+
+    '</div><div class="cal-actions"><button class="primary-btn sm" data-act="boox-plan-save">Guardar</button><button class="ghost-btn sm" data-act="boox-plan-cancel">Cancelar</button></div></section>';
+}
+function booxItemFormHTML(){
+  var f=S.booxItemForm; if(!f) return "";
+  var t=f.tipo, tit=f.id?'Editar':'Agregar';
+  var campos="";
+  if(t==="pieza"){
+    campos='<label class="bit-lbl">Imagen</label><label class="um-up">'+ic("plus",13)+' Subir imagen<input type="file" accept="image/*" data-act="boox-img" style="display:none" /></label>'+
+      (f.img_url?'<img class="um-thumb" src="'+esc(f.img_url)+'" />':'')+
+      '<label class="bit-lbl">Título</label><input class="bit-in" id="bi-titulo" value="'+esc(f.titulo||"")+'" />'+
+      '<label class="bit-lbl">Cliente / resultado</label><input class="bit-in" id="bi-detalle" value="'+esc(f.detalle||"")+'" />';
+  } else if(t==="caso"){
+    campos='<label class="bit-lbl">Cliente / caso</label><input class="bit-in" id="bi-titulo" value="'+esc(f.titulo||"")+'" />'+
+      '<label class="bit-lbl">Qué les hacemos (una línea)</label><input class="bit-in" id="bi-detalle" value="'+esc(f.detalle||"")+'" />';
+  } else {
+    campos='<label class="bit-lbl">Etiqueta</label><input class="bit-in" id="bi-titulo" value="'+esc(f.titulo||"")+'" placeholder="ej Instagram de Boox" />'+
+      '<label class="bit-lbl">Link (URL)</label><input class="bit-in" id="bi-url" value="'+esc(f.url||"")+'" placeholder="https://…" />';
+  }
+  return '<section class="card"><div class="card-head"><span class="card-title">'+tit+' '+(t==="pieza"?"pieza":(t==="caso"?"caso":"link"))+'</span></div><div class="form-grid">'+campos+'</div>'+
+    '<div class="cal-actions"><button class="primary-btn sm" data-act="boox-item-save">Guardar</button><button class="ghost-btn sm" data-act="boox-item-cancel">Cancelar</button></div></section>';
+}
+function booxHTML(){
+  var subs=[["resumen","Resumen"],["instagram","Instagram"]];
+  var nav='<div class="plata-sub">'+subs.map(function(s){return '<button class="plata-tab'+(S.booxSub===s[0]?" on":"")+'" data-act="boox-sub" data-sub="'+s[0]+'">'+s[1]+'</button>';}).join("")+'</div>';
+  var cont="";
+  if(S.booxLoading){ cont='<p class="card-note">Cargando…</p>'; }
+  else if(S.booxSub==="resumen"){
+    // Planes
+    var planes=(S.booxPlanes||[]).map(function(p){
+      return '<div class="cobro"><div class="cobro-top"><span class="cobro-name">'+esc(p.nombre)+'</span><span class="cobro-tools"><button class="ic-btn faint" data-act="boox-plan-edit" data-id="'+p.id+'">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="boox-plan-del" data-id="'+p.id+'">'+ic("trash",13)+'</button></span></div>'+
+        '<div class="cli-chips"><span class="chip ghost">'+esc(p.precio||"—")+'</span><span class="chip">'+esc(p.recurrencia)+'</span></div>'+
+        (p.incluye?'<div class="cli-note-short" style="-webkit-line-clamp:5">'+esc(p.incluye)+'</div>':'')+'</div>';
+    }).join("") || '<div class="empty">Todavía no cargaste planes. Tocá “Agregar plan”.</div>';
+    var planesSec='<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Planes y servicios</span></div>'+
+      (S.booxPlanForm?booxPlanFormHTML():'<div class="cal-actions"><button class="primary-btn sm" data-act="boox-plan-add">'+ic("plus",15)+' Agregar plan</button></div>')+
+      '<div class="cobro-grid">'+planes+'</div></section>';
+    // Portfolio: piezas
+    var piezas=(S.booxItems||[]).filter(function(x){return x.tipo==="pieza";}).map(function(x){
+      return '<div class="boox-pieza">'+(x.img_url?'<img src="'+esc(x.img_url)+'" alt="" />':'<div class="boox-noimg">sin imagen</div>')+
+        '<div class="boox-pieza-b"><div class="boox-pieza-t">'+esc(x.titulo||"(sin título)")+'</div>'+(x.detalle?'<div class="ct-note">'+esc(x.detalle)+'</div>':'')+
+        '<div class="cobro-tools"><button class="ic-btn faint" data-act="boox-item-edit" data-id="'+x.id+'">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="boox-item-del" data-id="'+x.id+'">'+ic("trash",13)+'</button></div></div></div>';
+    }).join("") || '<div class="empty">Sin piezas todavía.</div>';
+    var galSec='<section class="card"><div class="card-head"><span class="card-title">'+ic("calendar",16)+' Galería de piezas</span></div>'+
+      '<div class="cal-actions"><button class="ghost-btn sm" data-act="boox-item-add" data-tipo="pieza">'+ic("plus",14)+' Agregar pieza</button></div>'+
+      (S.booxItemForm&&S.booxItemForm.tipo==="pieza"?booxItemFormHTML():"")+
+      '<div class="boox-galeria">'+piezas+'</div></section>';
+    // Casos
+    var casos=(S.booxItems||[]).filter(function(x){return x.tipo==="caso";}).map(function(x){
+      return '<div class="um-hist"><span><strong>'+esc(x.titulo||"")+'</strong>'+(x.detalle?' · '+esc(x.detalle):'')+'</span><span class="cobro-tools"><button class="ic-btn faint" data-act="boox-item-edit" data-id="'+x.id+'">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="boox-item-del" data-id="'+x.id+'">'+ic("trash",13)+'</button></span></div>';
+    }).join("") || '<div class="empty">Sin casos todavía.</div>';
+    var casosSec='<section class="card"><div class="card-head"><span class="card-title">'+ic("users",16)+' Clientes / casos</span></div>'+
+      '<div class="cal-actions"><button class="ghost-btn sm" data-act="boox-item-add" data-tipo="caso">'+ic("plus",14)+' Agregar caso</button></div>'+
+      (S.booxItemForm&&S.booxItemForm.tipo==="caso"?booxItemFormHTML():"")+casos+'</section>';
+    // Links
+    var links=(S.booxItems||[]).filter(function(x){return x.tipo==="link";}).map(function(x){
+      return '<div class="um-hist"><span><strong>'+esc(x.titulo||"")+'</strong><br><span class="ct-note">'+esc(x.url||"")+'</span></span><span class="cobro-tools"><button class="ghost-btn sm" data-act="boox-link-copy" data-id="'+x.id+'">Copiar</button><button class="ic-btn faint" data-act="boox-item-edit" data-id="'+x.id+'">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="boox-item-del" data-id="'+x.id+'">'+ic("trash",13)+'</button></span></div>';
+    }).join("") || '<div class="empty">Sin links todavía.</div>';
+    var linksSec='<section class="card"><div class="card-head"><span class="card-title">'+ic("inbox",16)+' Enlaces</span></div>'+
+      '<div class="cal-actions"><button class="ghost-btn sm" data-act="boox-item-add" data-tipo="link">'+ic("plus",14)+' Agregar link</button></div>'+
+      (S.booxItemForm&&S.booxItemForm.tipo==="link"?booxItemFormHTML():"")+links+'</section>';
+    cont=planesSec+galSec+casosSec+linksSec;
+  } else {
+    // Instagram
+    var pend=S.booxPend||0;
+    cont='<section class="card"><div class="card-head"><span class="card-title">'+ic("calendar",16)+' Instagram de Boox</span></div>'+
+      '<p class="card-note">Objetivo: conseguir clientes. Editá la estrategia (pilares, propuesta de valor, tono) y generá el calendario con IA — igual que en los clientes.</p>'+
+      '<button class="primary-btn" data-act="boox-cal">'+ic("calendar",15)+' Estrategia y calendario de contenidos</button></section>'+
+      '<section class="card"><div class="card-head"><span class="card-title">'+ic("bell",16)+' Constancia</span></div>'+
+      '<p class="card-note">Marcá cada contenido como publicado desde el calendario. '+(pend>0?('Te quedan <strong>'+pend+'</strong> sin publicar esta semana.'):'¡Estás al día con tu cuenta!')+'</p></section>';
+  }
+  return nav+cont;
+}
+
 function appHTML(){
   var me=PROFILES.filter(function(p){return p.id===S.profile;})[0] || PROFILES[0];
   var tabs=[{id:"hoy",label:"Hoy",icon:"bell"},{id:"trabajo",label:S.priv.workspace,icon:"briefcase"}];
@@ -1601,10 +1769,11 @@ function appHTML(){
   tabs.push({id:"coordinar",label:"Coordinar",icon:"calendar"});
   tabs.push({id:"clientes",label:"Clientes",icon:"users"});
   tabs.push({id:"plata",label:"Plata",icon:"cash"});
+  tabs.push({id:"boox",label:"Boox",icon:"briefcase"});
   var nav=tabs.map(function(t){
     return '<button class="tab'+(S.tab===t.id?" on":"")+'" data-act="tab" data-tab="'+t.id+'">'+ic(t.icon,15)+esc(t.label)+'</button>';
   }).join("");
-  var view = S.tab==="hoy"?hoyHTML() : S.tab==="trabajo"?trabajoHTML() : S.tab==="agenda"?agendaHTML() : S.tab==="coordinar"?coordinarHTML() : S.tab==="plata"?plataHTML() : clientesHTML();
+  var view = S.tab==="hoy"?hoyHTML() : S.tab==="trabajo"?trabajoHTML() : S.tab==="agenda"?agendaHTML() : S.tab==="coordinar"?coordinarHTML() : S.tab==="plata"?plataHTML() : S.tab==="boox"?booxHTML() : clientesHTML();
   return '<div class="app"><header class="top"><div class="top-brand"><img src="logo-boox.png" alt="Boox" class="boox-logo small" onerror="this.style.display=\'none\';var n=this.nextElementSibling; if(n) n.className=\'boox-fallback show\';" /><span class="boox-fallback">Boox</span><strong>Quilombo cero</strong></div><div class="top-right"><span class="who" style="--accent:'+me.color+'">'+avatarImg(S.profile,24)+esc(me.label)+'</span><button class="ic-btn" title="Salir" data-act="logout">'+ic("logout",16)+'</button></div></header><nav class="tabs">'+nav+'</nav><main class="main">'+view+'</main></div>';
 }
 
@@ -1768,6 +1937,7 @@ async function onClick(e){
   if(a==="tab"){ S.tab=d.tab; S.editing=null; S.openDay=null;
     if(d.tab==="coordinar"){ S.coordLoading=true; render(); loadCoord().then(function(){ S.coordLoading=false; render(); }); return; }
     if(d.tab==="trabajo" && S.profile==="josefina"){ S.bitLoading=true; render(); loadBitacora(S.bitDate).then(function(){ S.bitLoading=false; render(); }); return; }
+    if(d.tab==="boox"){ S.booxLoading=true; render(); loadBoox().then(function(){ render(); }); return; }
     render(); return; }
   if(a==="goto-trabajo"){ S.tab="trabajo"; S.editing=null; if(S.profile==="josefina"){ S.bitLoading=true; render(); loadBitacora(S.bitDate).then(function(){ S.bitLoading=false; render(); }); return; } render(); return; }
   // --- Bitácora ---
@@ -1784,6 +1954,7 @@ async function onClick(e){
   if(a==="cal-guardar"){ saveCalendarioDB(); return; }
   if(a==="cal-add-item"){ var di=+d.di; if(S.calData[di]){ if(!S.calData[di].contenidos) S.calData[di].contenidos=[]; S.calData[di].contenidos.push({tipo:"story",momento:"",rubro:"",idea:"",objetivo:"vender",copy_sugerido:""}); render(); } return; }
   if(a==="cal-del-item"){ var di2=+d.di, ii2=+d.ii; if(S.calData[di2] && S.calData[di2].contenidos){ S.calData[di2].contenidos.splice(ii2,1); render(); await saveCalendarioDB(); } return; }
+  if(a==="cal-hecho"){ var hd=+d.di, hi=+d.ii; if(S.calData[hd] && S.calData[hd].contenidos && S.calData[hd].contenidos[hi]){ var hit=S.calData[hd].contenidos[hi]; hit.hecho=!hit.hecho; render(); await saveCalendarioDB(); if(S.calClienteId===S.booxClienteId){ var pe=0; S.calData.forEach(function(x){ (x.contenidos||[]).forEach(function(cc){ if(!cc.hecho) pe++; }); }); S.booxPend=pe; } } return; }
   if(a==="cal-stock-prev"||a==="cal-stock-next"){ var sd=new Date(S.calStockFecha+"T00:00:00"); sd.setDate(sd.getDate()+(a==="cal-stock-next"?1:-1)); S.calStockFecha=keyOf(sd); render(); await loadStock(S.calStockFecha); render(); return; }
   if(a==="cal-stock-today"){ S.calStockFecha=keyOf(new Date()); render(); await loadStock(S.calStockFecha); render(); return; }
   if(a==="cal-copy"){ var cc=S.calData[+d.di] && S.calData[+d.di].contenidos && S.calData[+d.di].contenidos[+d.ii]; if(cc){ copyText(cc.prompt_diseno||""); showOk("Prompt copiado ✓"); } return; }
@@ -1804,6 +1975,7 @@ async function onClick(e){
   if(a==="um-delfile"){ if(S.umSel){ if(d.campo==="pdf") S.umSel.entregables.calendario.pdf_url=""; else S.umSel.entregables.calendario.img_url=""; render(); await saveUmanaSel(); } return; }
   // --- Plata / cobros ---
   if(a==="goto-plata"){ S.tab="plata"; S.editing=null; render(); return; }
+  if(a==="goto-boox"){ S.tab="boox"; S.editing=null; S.booxLoading=true; render(); loadBoox().then(function(){ render(); }); return; }
   if(a==="cobro-hist"){ S.cobroHist=(S.cobroHist===d.id?null:d.id); render(); return; }
   if(a==="cobro-pagar-mensual"){ var cm1=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cm1) await registrarPago(cm1.id,{monto:cm1.monto,tipo:"completo",periodo:mesKey(),notas:"Mensual"}); return; }
   if(a==="cobro-pagar-completo"){ var cp=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cp){ var rc=cobroCalc(cp); await registrarPago(cp.id,{monto:rc.saldo,tipo:"completo",periodo:"P"+(cp.paquete_actual||1),notas:"Pago completo"}); } return; }
@@ -1824,6 +1996,20 @@ async function onClick(e){
   if(a==="gasto-form-save"){ guardarGasto(); return; }
   if(a==="gasto-form-cancel"){ S.gastoForm=null; render(); return; }
   if(a==="ahorro-sumar"){ var add=parseFloat(val("ah-sumar")); if(!add){ showError("Poné un monto."); return; } S.ahorro.guardado=(S.ahorro.guardado||0)+add; render(); await saveAhorro(); showOk("Ahorro actualizado ✓"); return; }
+  // --- Boox ---
+  if(a==="boox-sub"){ S.booxSub=d.sub; S.booxPlanForm=null; S.booxItemForm=null; render(); return; }
+  if(a==="boox-plan-add"){ S.booxPlanForm={id:null,recurrencia:"mensual"}; render(); return; }
+  if(a==="boox-plan-edit"){ var bp=S.booxPlanes.filter(function(x){return x.id===d.id;})[0]; if(bp){ S.booxPlanForm=Object.assign({},bp); render(); } return; }
+  if(a==="boox-plan-del"){ await deletePlan(d.id); return; }
+  if(a==="boox-plan-save"){ guardarPlan(); return; }
+  if(a==="boox-plan-cancel"){ S.booxPlanForm=null; render(); return; }
+  if(a==="boox-item-add"){ S.booxItemForm={id:null,tipo:d.tipo,img_url:""}; render(); return; }
+  if(a==="boox-item-edit"){ var bi=S.booxItems.filter(function(x){return x.id===d.id;})[0]; if(bi){ S.booxItemForm=Object.assign({},bi); render(); } return; }
+  if(a==="boox-item-del"){ await deleteItem(d.id); return; }
+  if(a==="boox-item-save"){ guardarItem(); return; }
+  if(a==="boox-item-cancel"){ S.booxItemForm=null; render(); return; }
+  if(a==="boox-link-copy"){ var bl=S.booxItems.filter(function(x){return x.id===d.id;})[0]; if(bl){ copyText(bl.url||""); showOk("Link copiado ✓"); } return; }
+  if(a==="boox-cal"){ S.calOpen=true; S.calLoading=true; S.calData=[]; S.calCtx=null; render(); await loadCalendarioFicha(S.booxClienteId, "Boox"); S.calLoading=false; render(); return; }
 
   // recurrentes
   if(a==="toggle-rec"){ var r=findRec(d.id); if(r){ r.done=!r.done; render(); await saveRow("recurrentes",r.id,{done:r.done}); } return; }
@@ -1916,6 +2102,7 @@ async function onChange(e){
   else if(a==="um-entrega"){ if(S.umSel){ S.umSel.fecha_entrega=t.value; render(); await saveUmanaSel(); } }
   else if(a==="um-upload"){ var uf=t.files&&t.files[0]; if(uf){ await umDoUpload(uf, d.campo); } }
   else if(a==="ahorro-field"){ S.ahorro[d.k]=parseFloat(t.value)||0; await saveAhorro(); render(); }
+  else if(a==="boox-img"){ var bf=t.files&&t.files[0]; if(bf){ await booxUpload(bf); } }
 }
 
 document.addEventListener("click", onClick);
