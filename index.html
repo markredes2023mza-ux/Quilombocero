@@ -205,6 +205,26 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .cli-note-short{font-size:13px;color:var(--soft);line-height:1.45;margin:2px 0 12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cli-note-short.empty-note{font-style:italic}
 .cli-ver{width:100%;justify-content:center}
+.dash{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.dash-box{background:#fff;border:1px solid var(--line);border-radius:13px;padding:12px;text-align:center}
+.dash-lbl{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--soft);margin-bottom:4px}
+.dash-num{font-family:var(--head);font-weight:700;font-size:18px}
+.cobro-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:13px}
+.cobro{background:#fff;border:1px solid var(--line);border-radius:16px;padding:15px;border-top:3px solid var(--line);transition:.15s}
+.cobro.estado-bien{border-top-color:var(--bien)} .cobro.estado-atencion{border-top-color:var(--atencion)} .cobro.estado-problema{border-top-color:var(--problema)}
+.cobro:hover{box-shadow:0 10px 24px -18px rgba(20,17,24,.35)}
+.cobro-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px}
+.cobro-name{font-family:var(--head);font-weight:600;font-size:15.5px}
+.cobro-prox{font-size:13px;color:var(--ink);margin:8px 0}
+.cobro-parte{font-size:13px;color:var(--soft);margin-bottom:8px}
+.cobro-actions{margin:8px 0}
+.cobro-acc{display:flex;flex-direction:column;gap:8px}
+.cobro-inline{display:flex;gap:6px}
+.cobro-inline .bit-in{margin:0;flex:1;min-width:0}
+.cobro-ok{display:inline-flex;align-items:center;gap:5px;color:var(--bien);font-weight:600;font-size:13.5px}
+.cobro-hist{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px}
+.cobro-hrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--soft);padding:3px 0}
+@media(max-width:560px){ .dash{grid-template-columns:1fr} }
 
 .ed-text{cursor:text;border-radius:6px;display:inline-block;width:100%}
 .ed-text:hover{background:var(--paper)}
@@ -342,7 +362,8 @@ var ICONS={
   user:["M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2",{c:[12,7,4]}],
   briefcase:[{r:[2,7,20,14,2]},"M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"],
   calendar:[{r:[3,4,18,18,2]},"M16 2v4","M8 2v4","M3 10h18"],
-  inbox:["M22 12h-6l-2 3h-4l-2-3H2","M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"]
+  inbox:["M22 12h-6l-2 3h-4l-2-3H2","M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"],
+  cash:[{r:[2,6,20,12,2]},{c:[12,12,2.5]},"M6 12h.01","M18 12h.01"]
 };
 function ic(n,s,cls){
   s=s||18; cls=cls||"";
@@ -486,7 +507,8 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         calOpen:false, calClienteId:null, calNombre:"", calCtx:null, calData:[], calLoading:false, calSaving:false, calError:"",
         calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null, calProgreso:"",
         umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[],
-        cliOpen:false, cliScope:null, cliId:null };
+        cliOpen:false, cliScope:null, cliId:null,
+        cobros:[], pagos:[], cobroHist:null };
 var root=document.getElementById("root");
 
 function val(id){ var e=document.getElementById(id); return e?e.value:""; }
@@ -569,6 +591,8 @@ async function loadAll(){
 
   var um=await sb.from("paquetes_umana").select("cliente_id, fecha_entrega, entregables").eq("cerrado",false);
   S.umActivos = (um.error)?[]:(um.data||[]);
+
+  await loadCobros();
 
   await refreshClientes(true);
 }
@@ -655,6 +679,12 @@ function hoyHTML(){
     if(grab>0) items.push({ name:cl, badge:"paquete", reasons:[grab+" reel"+(grab===1?"":"s")+" grabado"+(grab===1?"":"s")+" sin editar"], level:2, act:"goto-umana", cid:pq.cliente_id, cname:cl });
     if(pq.fecha_entrega){ var dr2=dueReason(pq.fecha_entrega); if(dr2) items.push({ name:cl, badge:"paquete", reasons:["Entrega del paquete: "+dr2.text], level:dr2.level, act:"goto-umana", cid:pq.cliente_id, cname:cl }); }
   });
+  // Cobros: mensuales por vencer/atrasados + saldos de paquete pendientes
+  (S.cobros||[]).forEach(function(co){
+    var rc=cobroCalc(co);
+    if(co.tipo==="mensual" && !rc.pagadoMes && rc.proxFecha){ var drc=dueReason(rc.proxFecha); if(drc) items.push({ name:co.nombre, badge:"cobro", reasons:["Cobro "+drc.text+" · "+plata(rc.proxMonto)], level:drc.level, act:"goto-plata" }); }
+    else if(co.tipo==="paquete" && rc.saldo>0){ items.push({ name:co.nombre, badge:"cobro", reasons:["Saldo pendiente: "+plata(rc.saldo)], level:1, act:"goto-plata" }); }
+  });
   // Visitas agendadas ya pasadas y sin contar -> pedir confirmación manual
   (S.priv.agenda||[]).forEach(function(e){
     if(!e.cliente_id || e.contada) return;
@@ -674,6 +704,8 @@ function hoyHTML(){
           ? '<button class="att-action" data-act="confirm-visit" data-eid="'+o.eid+'" data-cid="'+o.cid+'">Sí, la hice</button>'
           : o.act==="goto-umana"
           ? '<button class="att-action" data-act="goto-umana" data-cid="'+o.cid+'" data-name="'+esc(o.cname||"")+'">Ver</button>'
+          : o.act==="goto-plata"
+          ? '<button class="att-action" data-act="goto-plata">Ver</button>'
           : '<button class="att-action" data-act="goto-trabajo">Ver</button>';
         return '<li class="att lvl'+o.level+'"><div class="att-bar"></div><div class="att-body"><div class="att-top"><span class="att-name">'+esc(o.name)+'</span><span class="chip ghost">'+o.badge+'</span></div><div class="att-reasons">'+o.reasons.map(function(r){return '<span class="reason">'+esc(r)+'</span>';}).join("")+'</div></div>'+btn+'</li>';
       }).join("")+'</ul>';
@@ -1277,16 +1309,146 @@ function umanaHTML(){
   return back+head+detalle+hist+'</main></div>';
 }
 
+/* ------------------------------ Plata / Cobros ---------------------------- */
+var TIPO_COBRO={mensual:"Mensual fijo",paquete:"Por paquete",cc:"Cuenta corriente",variable:"Variable"};
+async function loadCobros(){
+  var c=await sb.from("cobros").select("*").order("created_at",{ascending:true});
+  var p=await sb.from("cobros_pagos").select("*").order("fecha",{ascending:true});
+  if(c.error){ console.error(c.error); S.cobros=[]; } else S.cobros=c.data||[];
+  if(p.error){ console.error(p.error); S.pagos=[]; } else S.pagos=p.data||[];
+}
+function plata(n){ n=Math.round(+n||0); return "$"+n.toLocaleString("es-AR"); }
+function mesKey(d){ d=d||new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+function pagosDe(id){ return S.pagos.filter(function(p){return p.cobro_id===id;}); }
+function factor5050(c){ return (c.is_shared && c.reparte_5050)?0.5:1; }
+function proxFechaMensual(c, pagado){
+  if(!c.dia_pago) return null;
+  var now=new Date(), y=now.getFullYear(), m=now.getMonth();
+  if(pagado){ m+=1; if(m>11){ m=0; y++; } }
+  var last=new Date(y,m+1,0).getDate();
+  return keyOf(new Date(y,m,Math.min(c.dia_pago,last)));
+}
+function cobroCalc(c){
+  var pg=pagosDe(c.id), cm=mesKey();
+  var r={estado:"",cls:"atencion",saldo:0,ccSaldo:0,proxFecha:null,proxMonto:c.monto||0,expectedMes:0,entradoMes:0,pagadoMes:false};
+  pg.forEach(function(p){
+    var pm=p.fecha?mesKey(new Date(p.fecha+"T00:00:00")):"";
+    if(pm===cm && p.tipo!=="cc_acumulado") r.entradoMes+=(+p.monto||0);
+  });
+  if(c.tipo==="mensual"){
+    r.pagadoMes=pg.some(function(p){return p.periodo===cm && p.tipo==="completo";});
+    r.estado=r.pagadoMes?"Pagado este mes":"Pendiente"; r.cls=r.pagadoMes?"bien":"atencion";
+    r.proxMonto=c.monto||0; r.proxFecha=proxFechaMensual(c,r.pagadoMes); r.expectedMes=c.monto||0;
+  } else if(c.tipo==="paquete"){
+    var lab="P"+(c.paquete_actual||1), paid=0;
+    pg.forEach(function(p){ if(p.periodo===lab) paid+=(+p.monto||0); });
+    r.saldo=Math.max(0,(c.monto||0)-paid);
+    r.estado=paid<=0?"Pendiente":(r.saldo<=0?"Pagado":"Seña / parcial"); r.cls=(r.saldo<=0&&paid>0)?"bien":"atencion";
+    r.proxMonto=r.saldo; r.expectedMes=r.saldo;
+  } else if(c.tipo==="cc"){
+    var acum=0,sald=0;
+    pg.forEach(function(p){ if(p.tipo==="cc_acumulado") acum+=(+p.monto||0); else if(p.tipo==="cc_saldado") sald+=(+p.monto||0); });
+    r.ccSaldo=Math.max(0,acum-sald);
+    r.estado="Saldo en cc: "+plata(r.ccSaldo); r.cls=r.ccSaldo>0?"atencion":"bien"; r.expectedMes=c.monto||0;
+  } else {
+    var vp=pg.filter(function(p){return p.periodo===cm;}), vm=0;
+    vp.forEach(function(p){ vm+=(+p.monto||0); });
+    r.pagadoMes=vp.length>0; r.estado=r.pagadoMes?("Cobrado: "+plata(vm)):"Pendiente (cargá el monto)"; r.cls=r.pagadoMes?"bien":"atencion";
+    r.proxMonto=vm; r.expectedMes=vm;
+  }
+  return r;
+}
+function dashboardMes(){
+  var esp=0,ent=0;
+  (S.cobros||[]).forEach(function(c){ var f=factor5050(c), r=cobroCalc(c); esp+=(r.expectedMes||0)*f; ent+=(r.entradoMes||0)*f; });
+  return {esperado:esp, entrado:ent, falta:Math.max(0,esp-ent)};
+}
+async function registrarPago(cobroId, pago){
+  var row=Object.assign({ cobro_id:cobroId, fecha:keyOf(new Date()), monto:0, tipo:"completo", periodo:"", notas:"" }, pago);
+  var res=await sb.from("cobros_pagos").insert(row);
+  if(res.error){ console.error(res.error); showError("No se pudo registrar el pago."); return; }
+  await loadCobros(); render(); showOk("Pago registrado ✓");
+}
+async function nuevoPaquete(c){
+  var res=await sb.from("cobros").update({ paquete_actual:(c.paquete_actual||1)+1 }).eq("id",c.id);
+  if(res.error){ console.error(res.error); showError("No se pudo abrir el paquete."); return; }
+  await loadCobros(); render();
+}
+function cobroCard(c){
+  var r=cobroCalc(c), f=factor5050(c);
+  var cliName = (allClientes().filter(function(x){return x.id===c.cliente_id;})[0]||{}).name;
+  var titulo = esc(c.nombre)+(cliName && cliName!==c.nombre?' <span class="card-sub">('+esc(cliName)+')</span>':'');
+  var montoTxt = (c.tipo==="variable")?"variable":(c.monto!=null?plata(c.monto):"—");
+  var parte = (f<1)?'<div class="cobro-parte">Tu parte (50%): <strong>'+plata((r.expectedMes||0)*0.5)+'</strong></div>':'';
+  var prox="";
+  if(c.tipo==="mensual"){ prox='Próximo: '+(r.proxFecha?fechaCorta(r.proxFecha):(c.ventana?esc(c.ventana):"—"))+' · '+plata(r.proxMonto); }
+  else if(c.tipo==="paquete"){ prox='Saldo pendiente: <strong>'+plata(r.saldo)+'</strong>'; }
+  else if(c.tipo==="cc"){ prox=esc(r.estado); }
+  else { prox='Día/ventana: '+(c.ventana?esc(c.ventana):(c.dia_pago||"—")); }
+  var dueB="";
+  if(c.tipo==="mensual" && !r.pagadoMes && r.proxFecha){ var dr=dueReason(r.proxFecha); if(dr) dueB=' <span class="due-badge '+(dr.level===3?"danger":"warn")+'">'+esc(dr.text)+'</span>'; }
+
+  // acciones por tipo
+  var acc="";
+  if(c.tipo==="mensual"){
+    acc = r.pagadoMes ? '<span class="cobro-ok">'+ic("check2",15)+' Pagado este mes</span>'
+      : '<button class="primary-btn sm" data-act="cobro-pagar-mensual" data-id="'+c.id+'">Marcar como pagado ('+plata(c.monto)+')</button>';
+  } else if(c.tipo==="paquete"){
+    if(r.saldo>0){
+      acc = '<div class="cobro-acc"><button class="primary-btn sm" data-act="cobro-pagar-completo" data-id="'+c.id+'">Pagar todo ('+plata(r.saldo)+')</button>'+
+        '<div class="cobro-inline"><input class="bit-in" id="amt-'+c.id+'" type="number" placeholder="monto" /><button class="ghost-btn sm" data-act="cobro-sena" data-id="'+c.id+'">Seña/parcial</button></div></div>';
+    } else {
+      acc = '<span class="cobro-ok">'+ic("check2",15)+' Paquete pagado</span> <button class="ghost-btn sm" data-act="cobro-nuevo-paq" data-id="'+c.id+'">Abrir nuevo paquete</button>';
+    }
+  } else if(c.tipo==="cc"){
+    acc = '<div class="cobro-acc"><button class="ghost-btn sm" data-act="cobro-cc-sumar" data-id="'+c.id+'">+ Sumar el mes ('+plata(c.monto)+')</button>'+
+      '<div class="cobro-inline"><input class="bit-in" id="amt-'+c.id+'" type="number" placeholder="monto saldado" /><button class="ghost-btn sm" data-act="cobro-cc-saldar" data-id="'+c.id+'">Registrar saldo</button></div></div>';
+  } else {
+    acc = '<div class="cobro-inline"><input class="bit-in" id="amt-'+c.id+'" type="number" placeholder="monto del mes" /><button class="primary-btn sm" data-act="cobro-variable" data-id="'+c.id+'">Registrar cobro del mes</button></div>';
+  }
+
+  // historial
+  var hist="";
+  if(S.cobroHist===c.id){
+    var pgs=pagosDe(c.id).slice().reverse();
+    hist='<div class="cobro-hist">'+(pgs.length?pgs.map(function(p){
+      return '<div class="cobro-hrow"><span>'+esc(p.fecha)+' · '+esc(p.tipo)+(p.periodo?' · '+esc(p.periodo):'')+'</span><span class="pct">'+plata(p.monto)+'</span></div>';
+    }).join(""):'<div class="empty">Sin pagos registrados.</div>')+'</div>';
+  }
+
+  return '<div class="cobro estado-'+r.cls+'">'+
+    '<div class="cobro-top"><span class="cobro-name">'+titulo+'</span><span class="cli-badge p-'+(r.cls==="bien"?"bien":(r.cls==="problema"?"problema":"atencion"))+'">'+esc(r.estado)+'</span></div>'+
+    '<div class="cli-chips"><span class="chip">'+TIPO_COBRO[c.tipo]+'</span><span class="chip ghost">'+montoTxt+'</span>'+(c.metodo?'<span class="chip">'+esc(c.metodo)+'</span>':'')+'</div>'+
+    '<div class="cobro-prox">'+prox+dueB+'</div>'+parte+
+    '<div class="cobro-actions">'+acc+'</div>'+
+    '<button class="link-btn" data-act="cobro-hist" data-id="'+c.id+'">'+(S.cobroHist===c.id?"Ocultar historial":"Ver historial de pagos")+'</button>'+hist+
+    '</div>';
+}
+function plataHTML(){
+  var compartidos=(S.cobros||[]).filter(function(c){return c.is_shared;});
+  var mios=(S.cobros||[]).filter(function(c){return !c.is_shared;});
+  var d=dashboardMes();
+  var dash='<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Tu mes</span><span class="card-sub">'+mesKey()+'</span></div>'+
+    '<p class="card-note">Lo compartido cuenta a la mitad (50/50); lo tuyo, al 100%.</p>'+
+    '<div class="dash"><div class="dash-box"><span class="dash-lbl">Esperás cobrar</span><span class="dash-num">'+plata(d.esperado)+'</span></div>'+
+    '<div class="dash-box"><span class="dash-lbl">Ya entró</span><span class="dash-num" style="color:var(--bien)">'+plata(d.entrado)+'</span></div>'+
+    '<div class="dash-box"><span class="dash-lbl">Falta</span><span class="dash-num" style="color:var(--atencion)">'+plata(d.falta)+'</span></div></div></section>';
+  var secComp='<section class="card"><div class="card-head"><span class="card-title">'+ic("users",16)+' Compartidos</span><span class="card-sub">los ven las dos · 50/50</span></div><div class="cobro-grid">'+(compartidos.map(cobroCard).join("")||'<div class="empty">Sin cobros compartidos.</div>')+'</div></section>';
+  var secMios='<section class="card"><div class="card-head"><span class="card-title">'+ic("user",16)+' Míos</span><span class="card-sub">solo los ves vos</span></div><div class="cobro-grid">'+(mios.map(cobroCard).join("")||'<div class="empty">Sin cobros propios.</div>')+'</div></section>';
+  return dash+secComp+secMios;
+}
+
 function appHTML(){
   var me=PROFILES.filter(function(p){return p.id===S.profile;})[0] || PROFILES[0];
   var tabs=[{id:"hoy",label:"Hoy",icon:"bell"},{id:"trabajo",label:S.priv.workspace,icon:"briefcase"}];
   tabs.push({id:"agenda",label:"Agenda",icon:"calendar"});
   tabs.push({id:"coordinar",label:"Coordinar",icon:"calendar"});
   tabs.push({id:"clientes",label:"Clientes",icon:"users"});
+  tabs.push({id:"plata",label:"Plata",icon:"cash"});
   var nav=tabs.map(function(t){
     return '<button class="tab'+(S.tab===t.id?" on":"")+'" data-act="tab" data-tab="'+t.id+'">'+ic(t.icon,15)+esc(t.label)+'</button>';
   }).join("");
-  var view = S.tab==="hoy"?hoyHTML() : S.tab==="trabajo"?trabajoHTML() : S.tab==="agenda"?agendaHTML() : S.tab==="coordinar"?coordinarHTML() : clientesHTML();
+  var view = S.tab==="hoy"?hoyHTML() : S.tab==="trabajo"?trabajoHTML() : S.tab==="agenda"?agendaHTML() : S.tab==="coordinar"?coordinarHTML() : S.tab==="plata"?plataHTML() : clientesHTML();
   return '<div class="app"><header class="top"><div class="top-brand"><img src="logo-boox.png" alt="Boox" class="boox-logo small" onerror="this.style.display=\'none\';var n=this.nextElementSibling; if(n) n.className=\'boox-fallback show\';" /><span class="boox-fallback">Boox</span><strong>Quilombo cero</strong></div><div class="top-right"><span class="who" style="--accent:'+me.color+'">'+avatarImg(S.profile,24)+esc(me.label)+'</span><button class="ic-btn" title="Salir" data-act="logout">'+ic("logout",16)+'</button></div></header><nav class="tabs">'+nav+'</nav><main class="main">'+view+'</main></div>';
 }
 
@@ -1484,6 +1646,16 @@ async function onClick(e){
   if(a==="um-prop"){ if(S.umSel){ var st=S.umSel.entregables.stories; st.propias_hechas=Math.max(0,Math.min(st.propias_total||20,(st.propias_hechas||0)+(d.dir==="1"?1:-1))); render(); await saveUmanaSel(); } return; }
   if(a==="um-reel"){ if(S.umSel){ S.umSel.entregables.reels[+d.i].estado=d.v; render(); await saveUmanaSel(); } return; }
   if(a==="um-delfile"){ if(S.umSel){ if(d.campo==="pdf") S.umSel.entregables.calendario.pdf_url=""; else S.umSel.entregables.calendario.img_url=""; render(); await saveUmanaSel(); } return; }
+  // --- Plata / cobros ---
+  if(a==="goto-plata"){ S.tab="plata"; S.editing=null; render(); return; }
+  if(a==="cobro-hist"){ S.cobroHist=(S.cobroHist===d.id?null:d.id); render(); return; }
+  if(a==="cobro-pagar-mensual"){ var cm1=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cm1) await registrarPago(cm1.id,{monto:cm1.monto,tipo:"completo",periodo:mesKey(),notas:"Mensual"}); return; }
+  if(a==="cobro-pagar-completo"){ var cp=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cp){ var rc=cobroCalc(cp); await registrarPago(cp.id,{monto:rc.saldo,tipo:"completo",periodo:"P"+(cp.paquete_actual||1),notas:"Pago completo"}); } return; }
+  if(a==="cobro-sena"){ var cs=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cs){ var v=parseFloat(val("amt-"+cs.id)); if(!v||v<=0){ showError("Poné un monto."); return; } var lab="P"+(cs.paquete_actual||1); var yaHay=pagosDe(cs.id).some(function(p){return p.periodo===lab;}); await registrarPago(cs.id,{monto:v,tipo:(yaHay?"parcial":"sena"),periodo:lab,notas:(yaHay?"Pago parcial":"Seña")}); } return; }
+  if(a==="cobro-nuevo-paq"){ var cn=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cn) await nuevoPaquete(cn); return; }
+  if(a==="cobro-cc-sumar"){ var cc1=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cc1) await registrarPago(cc1.id,{monto:cc1.monto,tipo:"cc_acumulado",periodo:mesKey(),notas:"Acumulado del mes"}); return; }
+  if(a==="cobro-cc-saldar"){ var cc2=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cc2){ var v2=parseFloat(val("amt-"+cc2.id)); if(!v2||v2<=0){ showError("Poné el monto saldado."); return; } await registrarPago(cc2.id,{monto:v2,tipo:"cc_saldado",periodo:mesKey(),notas:"Saldado (en especie)"}); } return; }
+  if(a==="cobro-variable"){ var cv2=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cv2){ var v3=parseFloat(val("amt-"+cv2.id)); if(!v3||v3<=0){ showError("Poné el monto del mes."); return; } await registrarPago(cv2.id,{monto:v3,tipo:"completo",periodo:mesKey(),notas:"Cobro del mes"}); } return; }
 
   // recurrentes
   if(a==="toggle-rec"){ var r=findRec(d.id); if(r){ r.done=!r.done; render(); await saveRow("recurrentes",r.id,{done:r.done}); } return; }
