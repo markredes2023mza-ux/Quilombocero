@@ -225,6 +225,13 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .cobro-hist{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px}
 .cobro-hrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--soft);padding:3px 0}
 @media(max-width:560px){ .dash{grid-template-columns:1fr} }
+.plata-sub{display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap}
+.plata-tab{background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:8px 16px;font-size:14px;font-weight:600;color:var(--soft);transition:.15s}
+.plata-tab:hover{border-color:var(--primary)}
+.plata-tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.cobro-tools{display:inline-flex;gap:2px;flex:none}
+.form-grid{display:flex;flex-direction:column}
+.form-grid .bit-in{margin:2px 0 8px}
 
 .ed-text{cursor:text;border-radius:6px;display:inline-block;width:100%}
 .ed-text:hover{background:var(--paper)}
@@ -508,7 +515,8 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         calTema:"", calStockFecha:null, calStockTexto:"", calStockUpdated:null, calProgreso:"",
         umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[],
         cliOpen:false, cliScope:null, cliId:null,
-        cobros:[], pagos:[], cobroHist:null };
+        cobros:[], pagos:[], cobroHist:null,
+        plataSub:"cobros", cobroForm:null, gastos:[], gastoForm:null, ahorro:{meta:0,guardado:0} };
 var root=document.getElementById("root");
 
 function val(id){ var e=document.getElementById(id); return e?e.value:""; }
@@ -593,6 +601,8 @@ async function loadAll(){
   S.umActivos = (um.error)?[]:(um.data||[]);
 
   await loadCobros();
+  await loadGastos();
+  await loadAhorro();
 
   await refreshClientes(true);
 }
@@ -1317,7 +1327,73 @@ async function loadCobros(){
   if(c.error){ console.error(c.error); S.cobros=[]; } else S.cobros=c.data||[];
   if(p.error){ console.error(p.error); S.pagos=[]; } else S.pagos=p.data||[];
 }
+async function loadGastos(){
+  var g=await sb.from("gastos").select("*").order("created_at",{ascending:true});
+  if(g.error){ console.error(g.error); S.gastos=[]; } else S.gastos=g.data||[];
+}
+async function loadAhorro(){
+  var a=await sb.from("ahorros").select("*").eq("owner_id",S.user.id).maybeSingle();
+  if(a.error){ console.error(a.error); }
+  S.ahorro = a.data ? {meta:+a.data.meta||0, guardado:+a.data.guardado||0} : {meta:0,guardado:0};
+}
+async function saveAhorro(){
+  var res=await sb.from("ahorros").upsert({owner_id:S.user.id, meta:S.ahorro.meta||0, guardado:S.ahorro.guardado||0}, {onConflict:"owner_id"});
+  if(res.error){ console.error(res.error); showError("No se pudo guardar el ahorro."); }
+}
 function plata(n){ n=Math.round(+n||0); return "$"+n.toLocaleString("es-AR"); }
+function gastosMes(){
+  var cm=mesKey(), tot=0;
+  (S.gastos||[]).forEach(function(g){
+    var f=(g.is_shared && g.reparte_5050)?0.5:1;
+    var cuenta = (g.tipo_recurrencia==="mensual") || (g.tipo_recurrencia==="suelto" && g.fecha && mesKey(new Date(g.fecha+"T00:00:00"))===cm);
+    if(cuenta) tot += (+g.monto||0)*f;
+  });
+  return tot;
+}
+async function guardarCobro(){
+  var nombre=val("cf-nombre").trim(); if(!nombre){ showError("Poné un nombre."); return; }
+  var tipo=val("cf-tipo")||"mensual";
+  var montoRaw=val("cf-monto");
+  var monto=(tipo==="variable"||montoRaw==="")?null:parseFloat(montoRaw);
+  var dia=val("cf-dia")?parseInt(val("cf-dia"),10):null;
+  var ventana=val("cf-ventana").trim();
+  var metodo=val("cf-metodo").trim();
+  var shared=(val("cf-zona")==="compartido");
+  var cliente=val("cf-cliente")||null;
+  var row={ nombre:nombre, tipo:tipo, monto:monto, dia_pago:dia, ventana:ventana, metodo:metodo, is_shared:shared, reparte_5050:shared, cliente_id:cliente };
+  var res;
+  if(S.cobroForm && S.cobroForm.id){ res=await sb.from("cobros").update(row).eq("id",S.cobroForm.id); }
+  else { row.owner_id=S.user.id; res=await sb.from("cobros").insert(row); }
+  if(res.error){ console.error(res.error); showError("No se pudo guardar el cobro."); return; }
+  S.cobroForm=null; await loadCobros(); render(); showOk("Cobro guardado ✓");
+}
+async function deleteCobro(id){
+  if(!window.confirm("¿Borrar este cobro y su historial de pagos?")) return;
+  var res=await sb.from("cobros").delete().eq("id",id);
+  if(res.error){ console.error(res.error); showError("No se pudo borrar."); return; }
+  S.cobroForm=null; await loadCobros(); render();
+}
+async function guardarGasto(){
+  var nombre=val("gf-nombre").trim(); if(!nombre){ showError("Poné un nombre."); return; }
+  var monto=parseFloat(val("gf-monto"))||0;
+  var tipoR=val("gf-tipo")||"mensual";
+  var dia=(tipoR==="mensual" && val("gf-dia"))?parseInt(val("gf-dia"),10):null;
+  var fecha=(tipoR==="suelto" && val("gf-fecha"))?val("gf-fecha"):null;
+  var categoria=val("gf-categoria").trim();
+  var shared=(val("gf-zona")==="compartido");
+  var row={ nombre:nombre, monto:monto, tipo_recurrencia:tipoR, dia:dia, fecha:fecha, categoria:categoria, is_shared:shared, reparte_5050:shared };
+  var res;
+  if(S.gastoForm && S.gastoForm.id){ res=await sb.from("gastos").update(row).eq("id",S.gastoForm.id); }
+  else { row.owner_id=S.user.id; res=await sb.from("gastos").insert(row); }
+  if(res.error){ console.error(res.error); showError("No se pudo guardar el gasto."); return; }
+  S.gastoForm=null; await loadGastos(); render(); showOk("Gasto guardado ✓");
+}
+async function deleteGasto(id){
+  if(!window.confirm("¿Borrar este gasto?")) return;
+  var res=await sb.from("gastos").delete().eq("id",id);
+  if(res.error){ console.error(res.error); showError("No se pudo borrar."); return; }
+  S.gastoForm=null; await loadGastos(); render();
+}
 function mesKey(d){ d=d||new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
 function pagosDe(id){ return S.pagos.filter(function(p){return p.cobro_id===id;}); }
 function factor5050(c){ return (c.is_shared && c.reparte_5050)?0.5:1; }
@@ -1417,25 +1493,105 @@ function cobroCard(c){
   }
 
   return '<div class="cobro estado-'+r.cls+'">'+
-    '<div class="cobro-top"><span class="cobro-name">'+titulo+'</span><span class="cli-badge p-'+(r.cls==="bien"?"bien":(r.cls==="problema"?"problema":"atencion"))+'">'+esc(r.estado)+'</span></div>'+
+    '<div class="cobro-top"><span class="cobro-name">'+titulo+'</span>'+
+      '<span class="cobro-tools"><button class="ic-btn faint" data-act="cobro-edit" data-id="'+c.id+'" title="Editar">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="cobro-del" data-id="'+c.id+'" title="Borrar">'+ic("trash",13)+'</button></span></div>'+
+    '<div class="cli-chips" style="margin-top:0"><span class="cli-badge p-'+(r.cls==="bien"?"bien":"atencion")+'">'+esc(r.estado)+'</span></div>'+
     '<div class="cli-chips"><span class="chip">'+TIPO_COBRO[c.tipo]+'</span><span class="chip ghost">'+montoTxt+'</span>'+(c.metodo?'<span class="chip">'+esc(c.metodo)+'</span>':'')+'</div>'+
     '<div class="cobro-prox">'+prox+dueB+'</div>'+parte+
     '<div class="cobro-actions">'+acc+'</div>'+
     '<button class="link-btn" data-act="cobro-hist" data-id="'+c.id+'">'+(S.cobroHist===c.id?"Ocultar historial":"Ver historial de pagos")+'</button>'+hist+
     '</div>';
 }
+function cobroFormHTML(){
+  var f=S.cobroForm; if(!f) return "";
+  var clientes=allClientes();
+  var tipos=[["mensual","Mensual fijo"],["paquete","Por paquete"],["cc","Cuenta corriente"],["variable","Variable"]];
+  var opT=tipos.map(function(o){return '<option value="'+o[0]+'"'+(f.tipo===o[0]?" selected":"")+'>'+o[1]+'</option>';}).join("");
+  var opZ='<option value="privado"'+(f.is_shared?"":" selected")+'>Privado (solo yo)</option><option value="compartido"'+(f.is_shared?" selected":"")+'>Compartido (las dos · 50/50)</option>';
+  var opC='<option value="">(sin cliente / suelto)</option>'+clientes.map(function(c){return '<option value="'+c.id+'"'+(f.cliente_id===c.id?" selected":"")+'>'+esc(c.name)+'</option>';}).join("");
+  return '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+(f.id?' Editar cobro':' Nuevo cobro')+'</span></div>'+
+    '<div class="form-grid">'+
+    '<label class="bit-lbl">Nombre</label><input class="bit-in" id="cf-nombre" value="'+esc(f.nombre||"")+'" />'+
+    '<label class="bit-lbl">Tipo</label><select class="bit-in" id="cf-tipo">'+opT+'</select>'+
+    '<label class="bit-lbl">Monto (vacío si es variable)</label><input class="bit-in" id="cf-monto" type="number" value="'+(f.monto!=null?f.monto:"")+'" />'+
+    '<label class="bit-lbl">Día de pago (número)</label><input class="bit-in" id="cf-dia" type="number" value="'+(f.dia_pago!=null?f.dia_pago:"")+'" />'+
+    '<label class="bit-lbl">O ventana (texto, ej "1 al 10")</label><input class="bit-in" id="cf-ventana" value="'+esc(f.ventana||"")+'" />'+
+    '<label class="bit-lbl">Método</label><input class="bit-in" id="cf-metodo" value="'+esc(f.metodo||"")+'" />'+
+    '<label class="bit-lbl">Zona</label><select class="bit-in" id="cf-zona">'+opZ+'</select>'+
+    '<label class="bit-lbl">Cliente</label><select class="bit-in" id="cf-cliente">'+opC+'</select>'+
+    '</div>'+
+    '<div class="cal-actions"><button class="primary-btn sm" data-act="cobro-form-save">Guardar</button><button class="ghost-btn sm" data-act="cobro-form-cancel">Cancelar</button></div></section>';
+}
+function gastoCard(g){
+  var f=(g.is_shared && g.reparte_5050)?0.5:1;
+  var cuando = g.tipo_recurrencia==="mensual" ? ("Mensual"+(g.dia?(" · día "+g.dia):"")) : ("Suelto"+(g.fecha?(" · "+esc(g.fecha)):""));
+  return '<div class="cobro">'+
+    '<div class="cobro-top"><span class="cobro-name">'+esc(g.nombre)+'</span><span class="cobro-tools"><button class="ic-btn faint" data-act="gasto-edit" data-id="'+g.id+'">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="gasto-del" data-id="'+g.id+'">'+ic("trash",13)+'</button></span></div>'+
+    '<div class="cli-chips"><span class="chip ghost">'+plata(g.monto)+'</span><span class="chip">'+cuando+'</span>'+(g.categoria?'<span class="chip">'+esc(g.categoria)+'</span>':'')+'</div>'+
+    (f<1?'<div class="cobro-parte">Tu parte (50%): <strong>'+plata((g.monto||0)*0.5)+'</strong></div>':'')+
+    '</div>';
+}
+function gastoFormHTML(){
+  var f=S.gastoForm; if(!f) return "";
+  var opT='<option value="mensual"'+(f.tipo_recurrencia!=="suelto"?" selected":"")+'>Mensual fijo</option><option value="suelto"'+(f.tipo_recurrencia==="suelto"?" selected":"")+'>Suelto (una vez)</option>';
+  var opZ='<option value="privado"'+(f.is_shared?"":" selected")+'>Privado (solo yo)</option><option value="compartido"'+(f.is_shared?" selected":"")+'>Compartido (las dos · 50/50)</option>';
+  return '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+(f.id?' Editar gasto':' Nuevo gasto')+'</span></div>'+
+    '<div class="form-grid">'+
+    '<label class="bit-lbl">Nombre</label><input class="bit-in" id="gf-nombre" value="'+esc(f.nombre||"")+'" />'+
+    '<label class="bit-lbl">Monto</label><input class="bit-in" id="gf-monto" type="number" value="'+(f.monto!=null?f.monto:"")+'" />'+
+    '<label class="bit-lbl">Recurrencia</label><select class="bit-in" id="gf-tipo">'+opT+'</select>'+
+    '<label class="bit-lbl">Día del mes (si es mensual)</label><input class="bit-in" id="gf-dia" type="number" value="'+(f.dia!=null?f.dia:"")+'" />'+
+    '<label class="bit-lbl">Fecha (si es suelto)</label><input class="bit-in" id="gf-fecha" type="date" value="'+(f.fecha||"")+'" />'+
+    '<label class="bit-lbl">Categoría</label><input class="bit-in" id="gf-categoria" value="'+esc(f.categoria||"")+'" />'+
+    '<label class="bit-lbl">Zona</label><select class="bit-in" id="gf-zona">'+opZ+'</select>'+
+    '</div>'+
+    '<div class="cal-actions"><button class="primary-btn sm" data-act="gasto-form-save">Guardar</button><button class="ghost-btn sm" data-act="gasto-form-cancel">Cancelar</button></div></section>';
+}
 function plataHTML(){
-  var compartidos=(S.cobros||[]).filter(function(c){return c.is_shared;});
-  var mios=(S.cobros||[]).filter(function(c){return !c.is_shared;});
-  var d=dashboardMes();
+  var d=dashboardMes(), gm=gastosMes(), neto=d.entrado-gm;
   var dash='<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Tu mes</span><span class="card-sub">'+mesKey()+'</span></div>'+
     '<p class="card-note">Lo compartido cuenta a la mitad (50/50); lo tuyo, al 100%.</p>'+
-    '<div class="dash"><div class="dash-box"><span class="dash-lbl">Esperás cobrar</span><span class="dash-num">'+plata(d.esperado)+'</span></div>'+
+    '<div class="dash">'+
+    '<div class="dash-box"><span class="dash-lbl">Esperás cobrar</span><span class="dash-num">'+plata(d.esperado)+'</span></div>'+
     '<div class="dash-box"><span class="dash-lbl">Ya entró</span><span class="dash-num" style="color:var(--bien)">'+plata(d.entrado)+'</span></div>'+
-    '<div class="dash-box"><span class="dash-lbl">Falta</span><span class="dash-num" style="color:var(--atencion)">'+plata(d.falta)+'</span></div></div></section>';
-  var secComp='<section class="card"><div class="card-head"><span class="card-title">'+ic("users",16)+' Compartidos</span><span class="card-sub">los ven las dos · 50/50</span></div><div class="cobro-grid">'+(compartidos.map(cobroCard).join("")||'<div class="empty">Sin cobros compartidos.</div>')+'</div></section>';
-  var secMios='<section class="card"><div class="card-head"><span class="card-title">'+ic("user",16)+' Míos</span><span class="card-sub">solo los ves vos</span></div><div class="cobro-grid">'+(mios.map(cobroCard).join("")||'<div class="empty">Sin cobros propios.</div>')+'</div></section>';
-  return dash+secComp+secMios;
+    '<div class="dash-box"><span class="dash-lbl">Gastos del mes</span><span class="dash-num" style="color:var(--problema)">'+plata(gm)+'</span></div>'+
+    '<div class="dash-box"><span class="dash-lbl">Neto (entró − gastos)</span><span class="dash-num" style="color:'+(neto>=0?"var(--bien)":"var(--problema)")+'">'+plata(neto)+'</span></div>'+
+    '</div></section>';
+  var subs=[["cobros","Cobros"],["gastos","Gastos"],["ahorros","Ahorros"]];
+  var nav='<div class="plata-sub">'+subs.map(function(s){return '<button class="plata-tab'+(S.plataSub===s[0]?" on":"")+'" data-act="plata-sub" data-sub="'+s[0]+'">'+s[1]+'</button>';}).join("")+'</div>';
+
+  var cont="";
+  if(S.plataSub==="cobros"){
+    var comp=(S.cobros||[]).filter(function(c){return c.is_shared;});
+    var mios=(S.cobros||[]).filter(function(c){return !c.is_shared;});
+    cont = (S.cobroForm?cobroFormHTML():'<div class="cal-actions"><button class="primary-btn sm" data-act="cobro-add">'+ic("plus",15)+' Agregar cobro</button></div>')+
+      '<section class="card"><div class="card-head"><span class="card-title">'+ic("users",16)+' Compartidos</span><span class="card-sub">las dos · 50/50</span></div><div class="cobro-grid">'+(comp.map(cobroCard).join("")||'<div class="empty">Sin cobros compartidos.</div>')+'</div></section>'+
+      '<section class="card"><div class="card-head"><span class="card-title">'+ic("user",16)+' Míos</span><span class="card-sub">solo los ves vos</span></div><div class="cobro-grid">'+(mios.map(cobroCard).join("")||'<div class="empty">Sin cobros propios.</div>')+'</div></section>';
+  } else if(S.plataSub==="gastos"){
+    var gc=(S.gastos||[]).filter(function(g){return g.is_shared;});
+    var gm2=(S.gastos||[]).filter(function(g){return !g.is_shared;});
+    cont = (S.gastoForm?gastoFormHTML():'<div class="cal-actions"><button class="primary-btn sm" data-act="gasto-add">'+ic("plus",15)+' Agregar gasto</button></div>')+
+      '<section class="card"><div class="card-head"><span class="card-title">'+ic("users",16)+' Gastos de la agencia</span><span class="card-sub">las dos · 50/50</span></div><div class="cobro-grid">'+(gc.map(gastoCard).join("")||'<div class="empty">Sin gastos compartidos.</div>')+'</div></section>'+
+      '<section class="card"><div class="card-head"><span class="card-title">'+ic("user",16)+' Mis gastos</span><span class="card-sub">solo los ves vos</span></div><div class="cobro-grid">'+(gm2.map(gastoCard).join("")||'<div class="empty">Sin gastos propios.</div>')+'</div></section>';
+  } else {
+    var queda=d.entrado-gm;
+    var meta=S.ahorro.meta||0, guard=S.ahorro.guardado||0;
+    var pct=meta>0?Math.min(100,Math.round(guard/meta*100)):0;
+    cont = '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Resumen del mes</span><span class="card-sub">privado tuyo</span></div>'+
+      '<div class="dash"><div class="dash-box"><span class="dash-lbl">Ingresos cobrados (tu parte)</span><span class="dash-num" style="color:var(--bien)">'+plata(d.entrado)+'</span></div>'+
+      '<div class="dash-box"><span class="dash-lbl">Gastos (tu parte)</span><span class="dash-num" style="color:var(--problema)">'+plata(gm)+'</span></div>'+
+      '<div class="dash-box"><span class="dash-lbl">Lo que te queda</span><span class="dash-num" style="color:'+(queda>=0?"var(--bien)":"var(--problema)")+'">'+plata(queda)+'</span></div></div></section>'+
+      '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Mi ahorro</span></div>'+
+      '<p class="card-note">La meta y lo guardado los cargás vos a mano; la app no los calcula sola.</p>'+
+      '<div class="bar" style="margin-bottom:6px"><div class="bar-fill" style="width:'+pct+'%"></div></div>'+
+      '<div class="cobro-prox">'+plata(guard)+' de '+plata(meta)+' ('+pct+'%)</div>'+
+      '<div class="form-grid" style="margin-top:8px">'+
+      '<label class="bit-lbl">Meta de ahorro</label><input class="bit-in" id="ah-meta" type="number" data-act="ahorro-field" data-k="meta" value="'+(meta||"")+'" />'+
+      '<label class="bit-lbl">Cuánto llevo guardado</label><input class="bit-in" id="ah-guardado" type="number" data-act="ahorro-field" data-k="guardado" value="'+(guard||"")+'" />'+
+      '</div>'+
+      '<div class="cobro-inline" style="margin-top:8px"><input class="bit-in" id="ah-sumar" type="number" placeholder="sumar al guardado" /><button class="ghost-btn sm" data-act="ahorro-sumar">+ Sumar</button></div></section>';
+  }
+  return dash+nav+cont;
 }
 
 function appHTML(){
@@ -1656,6 +1812,18 @@ async function onClick(e){
   if(a==="cobro-cc-sumar"){ var cc1=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cc1) await registrarPago(cc1.id,{monto:cc1.monto,tipo:"cc_acumulado",periodo:mesKey(),notas:"Acumulado del mes"}); return; }
   if(a==="cobro-cc-saldar"){ var cc2=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cc2){ var v2=parseFloat(val("amt-"+cc2.id)); if(!v2||v2<=0){ showError("Poné el monto saldado."); return; } await registrarPago(cc2.id,{monto:v2,tipo:"cc_saldado",periodo:mesKey(),notas:"Saldado (en especie)"}); } return; }
   if(a==="cobro-variable"){ var cv2=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(cv2){ var v3=parseFloat(val("amt-"+cv2.id)); if(!v3||v3<=0){ showError("Poné el monto del mes."); return; } await registrarPago(cv2.id,{monto:v3,tipo:"completo",periodo:mesKey(),notas:"Cobro del mes"}); } return; }
+  if(a==="plata-sub"){ S.plataSub=d.sub; S.cobroForm=null; S.gastoForm=null; render(); return; }
+  if(a==="cobro-add"){ S.cobroForm={id:null,tipo:"mensual",is_shared:false}; render(); return; }
+  if(a==="cobro-edit"){ var ce=S.cobros.filter(function(x){return x.id===d.id;})[0]; if(ce){ S.cobroForm=Object.assign({},ce); render(); } return; }
+  if(a==="cobro-del"){ await deleteCobro(d.id); return; }
+  if(a==="cobro-form-save"){ guardarCobro(); return; }
+  if(a==="cobro-form-cancel"){ S.cobroForm=null; render(); return; }
+  if(a==="gasto-add"){ S.gastoForm={id:null,tipo_recurrencia:"mensual",is_shared:false}; render(); return; }
+  if(a==="gasto-edit"){ var ge=S.gastos.filter(function(x){return x.id===d.id;})[0]; if(ge){ S.gastoForm=Object.assign({},ge); render(); } return; }
+  if(a==="gasto-del"){ await deleteGasto(d.id); return; }
+  if(a==="gasto-form-save"){ guardarGasto(); return; }
+  if(a==="gasto-form-cancel"){ S.gastoForm=null; render(); return; }
+  if(a==="ahorro-sumar"){ var add=parseFloat(val("ah-sumar")); if(!add){ showError("Poné un monto."); return; } S.ahorro.guardado=(S.ahorro.guardado||0)+add; render(); await saveAhorro(); showOk("Ahorro actualizado ✓"); return; }
 
   // recurrentes
   if(a==="toggle-rec"){ var r=findRec(d.id); if(r){ r.done=!r.done; render(); await saveRow("recurrentes",r.id,{done:r.done}); } return; }
@@ -1747,6 +1915,7 @@ async function onChange(e){
   else if(a==="um-drive"){ if(S.umSel){ S.umSel.entregables.stories.drive_url=t.value; await saveUmanaSel(); render(); } }
   else if(a==="um-entrega"){ if(S.umSel){ S.umSel.fecha_entrega=t.value; render(); await saveUmanaSel(); } }
   else if(a==="um-upload"){ var uf=t.files&&t.files[0]; if(uf){ await umDoUpload(uf, d.campo); } }
+  else if(a==="ahorro-field"){ S.ahorro[d.k]=parseFloat(t.value)||0; await saveAhorro(); render(); }
 }
 
 document.addEventListener("click", onClick);
