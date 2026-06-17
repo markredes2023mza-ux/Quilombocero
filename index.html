@@ -6,6 +6,8 @@
 <title>Quilombo cero</title>
 <!-- Cliente de Supabase (supabase-js v2) por CDN. Compatible con claves sb_publishable_... -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- jsPDF para generar reportes en PDF desde el navegador -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <!-- Tipografías Boox: Baloo 2 (títulos, redondeada) + Inter (texto de trabajo) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -294,6 +296,8 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .bit-pill.on{background:var(--primary-soft);color:var(--primary);border-color:var(--primary)}
 .bit-in{width:100%;padding:9px 11px;border:1.5px solid var(--line);border-radius:10px;font-size:14px;outline:none;margin:2px 0 8px}
 .bit-in:focus{border-color:var(--primary)}
+.placa-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px}
+.placa-row .bit-in{flex:1;min-width:140px;margin:0}
 .cal-ctx{display:flex;flex-direction:column}
 .cal-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
 .cal-week{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
@@ -755,14 +759,22 @@ function bitDefaults(){
     agencia:{ hecho:false },
     materiales:{ entrega_despacho:false, control_stock:false, entrega_vendedores:false, materiales_texto:"", accion_materiales:false },
     catalogos:{ catalogo:null, acciones_texto:"" },
-    disenos:{ tipo:null, placa_cual:"" }
+    disenos:{ tipo:null, placa_cual:"", placas:[] }
   };
+}
+// Asegura la lista de placas y migra el viejo placa_cual sin perder lo cargado.
+function bitNormDisenos(dis){
+  if(!dis) return {tipo:null,placa_cual:"",placas:[]};
+  if(!Array.isArray(dis.placas)) dis.placas=[];
+  if(dis.tipo==="placa" && dis.placas.length===0 && dis.placa_cual){ dis.placas=[{nombre:dis.placa_cual, archivo_url:""}]; }
+  return dis;
 }
 async function loadBitacora(fecha){
   var def=bitDefaults();
   var res=await sb.from("bitacora_diaria").select("tarea, detalle").eq("owner_id",S.user.id).eq("fecha",fecha);
   if(res.error){ console.error(res.error); showError("No se pudo cargar la bitácora."); }
   else { (res.data||[]).forEach(function(r){ if(def[r.tarea]) def[r.tarea]=Object.assign(def[r.tarea], r.detalle||{}); }); }
+  bitNormDisenos(def.disenos);
   S.bitacora=def;
 }
 async function saveBit(tarea){
@@ -771,6 +783,113 @@ async function saveBit(tarea){
     { owner_id:S.user.id, fecha:S.bitDate, tarea:tarea, detalle:S.bitacora[tarea] },
     { onConflict:"owner_id,fecha,tarea" });
   if(res.error){ console.error(res.error); showError("No se pudo guardar la bitácora."); }
+}
+async function bitUploadPlaca(file, idx){
+  if(!file || !S.bitacora) return;
+  S.bitLoading=true; render();
+  try{
+    var ext=(String(file.name).split(".").pop()||"jpg").toLowerCase();
+    var path="placas/"+S.bitDate+"/"+Date.now()+"-"+idx+"."+ext;
+    var up=await sb.storage.from("bitacora").upload(path, file, {upsert:true});
+    if(up.error) throw up.error;
+    S.bitacora.disenos.placas[idx].archivo_url=sb.storage.from("bitacora").getPublicUrl(path).data.publicUrl;
+    await saveBit("disenos");
+  }catch(e){ console.error(e); showError("No se pudo subir la placa."); }
+  S.bitLoading=false; render();
+}
+// Texto-resumen de un día de bitácora (reusado en los PDF)
+function bitResumenLineas(b, esLunes){
+  var L=[];
+  if(esLunes) L.push("Agencia y copys: "+(b.agencia&&b.agencia.hecho?"revisé copy y posts ✓":"—"));
+  var m=b.materiales||{}, mats=[];
+  if(m.entrega_despacho) mats.push("entregué materiales para despacho de pedido vendido");
+  if(m.control_stock) mats.push("orden / control de stock");
+  if(m.entrega_vendedores) mats.push("entregué a vendedores"+(m.materiales_texto?(" ("+m.materiales_texto+")"):""));
+  if(m.accion_materiales) mats.push("armamos acción con materiales");
+  L.push("Materiales: "+(mats.length?mats.join("; "):"—"));
+  var c=b.catalogos||{};
+  L.push("Catálogos: "+(c.catalogo?String(c.catalogo).toUpperCase():"—")+(c.acciones_texto?(" — "+c.acciones_texto):""));
+  var di=b.disenos||{}, dtxt="—";
+  if(di.tipo==="placa"){ var ps=(di.placas||[]).map(function(p){return p.nombre||"placa";}); if(!ps.length && di.placa_cual) ps=[di.placa_cual]; dtxt="hice placa(s): "+(ps.length?ps.join(", "):"sí"); }
+  else if(di.tipo==="delegada") dtxt="la delegué a la agencia";
+  else if(di.tipo==="ninguno") dtxt="no tuve";
+  L.push("Diseños: "+dtxt);
+  return L;
+}
+function lunesDe(key){ var d=new Date(key+"T00:00:00"); var wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd); return d; }
+function getLogoDataURL(){
+  return new Promise(function(resolve){
+    try{
+      var img=new Image();
+      img.onload=function(){ try{ var cv=document.createElement("canvas"); cv.width=img.naturalWidth; cv.height=img.naturalHeight; cv.getContext("2d").drawImage(img,0,0); resolve(cv.toDataURL("image/png")); }catch(e){ resolve(null); } };
+      img.onerror=function(){ resolve(null); };
+      img.src="logo-boox.png";
+    }catch(e){ resolve(null); }
+  });
+}
+async function pdfHeader(doc, titulo, subtitulo){
+  doc.setFillColor(245,16,139); doc.rect(0,0,210,24,"F");
+  var logo=await getLogoDataURL();
+  var x=12;
+  if(logo){ try{ doc.addImage(logo,"PNG",12,7,22,10); x=40; }catch(e){} }
+  doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(15);
+  doc.text("Boox", x, 15);
+  doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.text(titulo, 200, 11, {align:"right"});
+  doc.setFontSize(9); doc.text(subtitulo, 200, 17, {align:"right"});
+  doc.setTextColor(20,17,24);
+}
+function pdfSeccion(doc, y, titulo, lineas){
+  if(y>275){ doc.addPage(); y=20; }
+  doc.setFont("helvetica","bold"); doc.setTextColor(245,16,139); doc.setFontSize(12);
+  doc.text(titulo, 14, y); y+=6;
+  doc.setFont("helvetica","normal"); doc.setTextColor(20,17,24); doc.setFontSize(10.5);
+  lineas.forEach(function(ln){
+    var wrapped=doc.splitTextToSize(ln, 180);
+    wrapped.forEach(function(w){ if(y>282){ doc.addPage(); y=20; } doc.text(w, 16, y); y+=5.4; });
+  });
+  return y+3;
+}
+async function pdfDia(){
+  if(!window.jspdf){ showError("No se pudo cargar el generador de PDF."); return; }
+  var b=S.bitacora||bitDefaults();
+  var doc=new window.jspdf.jsPDF();
+  await pdfHeader(doc, "Bitácora del día", "Grandbar · Josefina");
+  doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.text(bitFechaLarga(S.bitDate), 14, 34);
+  var y=44, esL=esLunes(S.bitDate);
+  if(esL) y=pdfSeccion(doc, y, "Agencia y copys", ["Revisé copy y posts de la semana: "+(b.agencia.hecho?"sí ✓":"no")]);
+  var m=b.materiales||{};
+  y=pdfSeccion(doc, y, "Materiales", [
+    (m.entrega_despacho?"✓":"○")+" Entregué materiales para despacho de pedido vendido",
+    (m.control_stock?"✓":"○")+" Orden / control de stock del depósito",
+    (m.entrega_vendedores?"✓":"○")+" Entregué materiales a vendedores"+(m.materiales_texto?(" — "+m.materiales_texto):""),
+    (m.accion_materiales?"✓":"○")+" Armamos una acción con materiales del depósito"
+  ]);
+  var c=b.catalogos||{};
+  y=pdfSeccion(doc, y, "Catálogos online", ["Catálogo corregido: "+(c.catalogo?String(c.catalogo).toUpperCase():"—"), "Acciones: "+(c.acciones_texto||"—")]);
+  var di=b.disenos||{}, dl=[];
+  if(di.tipo==="placa"){ dl.push("Hice placa(s):"); var ps=(di.placas||[]); if(!ps.length && di.placa_cual) ps=[{nombre:di.placa_cual}]; if(ps.length){ ps.forEach(function(p,i){ dl.push("  "+(i+1)+") "+(p.nombre||"(sin nombre)")+(p.archivo_url?" [archivo subido]":"")); }); } else dl.push("  (sin detalle)"); }
+  else if(di.tipo==="delegada") dl.push("La delegué a la agencia");
+  else if(di.tipo==="ninguno") dl.push("No tuve");
+  else dl.push("—");
+  y=pdfSeccion(doc, y, "Diseños", dl);
+  doc.save("bitacora-"+S.bitDate+".pdf");
+}
+async function pdfSemana(){
+  if(!window.jspdf){ showError("No se pudo cargar el generador de PDF."); return; }
+  var lun=lunesDe(S.bitDate), dias=[]; for(var i=0;i<6;i++){ var dd=new Date(lun); dd.setDate(lun.getDate()+i); dias.push(keyOf(dd)); }
+  var res=await sb.from("bitacora_diaria").select("fecha,tarea,detalle").eq("owner_id",S.user.id).in("fecha",dias);
+  var map={}; dias.forEach(function(k){ map[k]=bitDefaults(); });
+  if(!res.error){ (res.data||[]).forEach(function(r){ if(map[r.fecha] && map[r.fecha][r.tarea]) map[r.fecha][r.tarea]=Object.assign(map[r.fecha][r.tarea], r.detalle||{}); }); }
+  var doc=new window.jspdf.jsPDF();
+  await pdfHeader(doc, "Reporte semanal", "Grandbar · Josefina");
+  doc.setFont("helvetica","bold"); doc.setFontSize(12);
+  doc.text("Semana del "+keyOf(lun)+" al "+dias[5], 14, 34);
+  var y=44;
+  dias.forEach(function(k,idx){
+    if(idx===5){} // sábado
+    y=pdfSeccion(doc, y, DIAS[idx]+" "+new Date(k+"T00:00:00").getDate(), bitResumenLineas(map[k], idx===0));
+  });
+  doc.save("bitacora-semana-"+keyOf(lun)+".pdf");
 }
 function bitFechaLarga(key){
   var d=new Date(key+"T00:00:00"); if(isNaN(d.getTime())) return key;
@@ -810,15 +929,25 @@ function bitacoraHTML(){
   var disOpts=[["placa","Hice una placa"],["delegada","La delegué a la agencia"],["ninguno","No tuve"]].map(function(o){
     return '<button class="bit-pill'+(b.disenos.tipo===o[0]?" on":"")+'" data-act="bit-dis" data-v="'+o[0]+'">'+o[1]+'</button>';
   }).join("");
-  var disCual = b.disenos.tipo==="placa"
-    ? '<input class="bit-in" id="bit-dis-cual" data-act="bit-dis-cual" placeholder="¿Cuál?" value="'+esc(b.disenos.placa_cual||"")+'" />'
-    : '';
-  var disenos='<div class="bit-block"><div class="bit-title">Diseños</div><div class="bit-pills">'+disOpts+'</div>'+disCual+'</div>';
+  var disPlacas="";
+  if(b.disenos.tipo==="placa"){
+    var placas=b.disenos.placas||[];
+    var prows=placas.map(function(p,i){
+      return '<div class="placa-row"><input class="bit-in" data-act="bit-placa-nombre" data-i="'+i+'" placeholder="nombre de la placa" value="'+esc(p.nombre||"")+'" />'+
+        '<label class="um-up">'+ic("plus",13)+(p.archivo_url?" Cambiar":" Subir")+'<input type="file" accept="image/png,image/jpeg" data-act="bit-placa-file" data-i="'+i+'" style="display:none" /></label>'+
+        (p.archivo_url?'<a class="um-link" href="'+esc(p.archivo_url)+'" target="_blank" rel="noopener">Ver</a>':'')+
+        '<button class="sub-del" data-act="bit-placa-del" data-i="'+i+'">'+ic("x",13)+'</button></div>'+
+        (p.archivo_url?'<img class="um-thumb" src="'+esc(p.archivo_url)+'" />':'');
+    }).join("");
+    disPlacas='<div class="bit-lbl" style="margin-top:6px">Placas que hiciste</div>'+(prows||'<p class="hint">Sumá la primera placa.</p>')+'<button class="cal-addbtn" data-act="bit-placa-add">'+ic("plus",13)+' agregar placa</button>';
+  }
+  var disenos='<div class="bit-block"><div class="bit-title">Diseños</div><div class="bit-pills">'+disOpts+'</div>'+disPlacas+'</div>';
 
   var esHoy=(S.bitDate===keyOf(new Date()));
   return '<section class="card"><div class="card-head"><span class="card-title">'+ic("rotate",16)+' Bitácora del día</span><span class="card-sub">'+(S.bitLoading?"cargando…":"Grandbar")+'</span></div>'+
     '<p class="card-note">Registrá lo que hiciste cada día. Queda guardado y podés mirar días anteriores con las flechas.</p>'+
     '<div class="cal-nav"><button class="ic-btn sm" data-act="bit-prev">‹</button><div style="text-align:center"><div class="cal-range" style="text-transform:capitalize">'+bitFechaLarga(S.bitDate)+'</div>'+(!esHoy?'<button class="cal-today-btn" data-act="bit-today">volver a hoy</button>':'')+'</div><button class="ic-btn sm" data-act="bit-next">›</button></div>'+
+    '<div class="cal-actions" style="margin-bottom:6px"><button class="ghost-btn sm" data-act="bit-pdf-dia">'+ic("inbox",14)+' Reporte del día</button><button class="ghost-btn sm" data-act="bit-pdf-semana">'+ic("inbox",14)+' Reporte semanal</button></div>'+
     agencia+materiales+catalogos+disenos+'</section>';
 }
 
@@ -1946,7 +2075,11 @@ async function onClick(e){
   if(a==="bit-agencia"){ S.bitacora.agencia.hecho=!S.bitacora.agencia.hecho; render(); await saveBit("agencia"); return; }
   if(a==="bit-mat"){ var mk=d.k; S.bitacora.materiales[mk]=!S.bitacora.materiales[mk]; render(); await saveBit("materiales"); return; }
   if(a==="bit-cat"){ S.bitacora.catalogos.catalogo = (S.bitacora.catalogos.catalogo===d.v? null : d.v); render(); await saveBit("catalogos"); return; }
-  if(a==="bit-dis"){ S.bitacora.disenos.tipo = (S.bitacora.disenos.tipo===d.v? null : d.v); render(); await saveBit("disenos"); return; }
+  if(a==="bit-dis"){ S.bitacora.disenos.tipo = (S.bitacora.disenos.tipo===d.v? null : d.v); if(S.bitacora.disenos.tipo==="placa" && !Array.isArray(S.bitacora.disenos.placas)) S.bitacora.disenos.placas=[]; render(); await saveBit("disenos"); return; }
+  if(a==="bit-placa-add"){ if(!S.bitacora.disenos.placas) S.bitacora.disenos.placas=[]; S.bitacora.disenos.placas.push({nombre:"",archivo_url:""}); render(); await saveBit("disenos"); return; }
+  if(a==="bit-placa-del"){ var pdi=+d.i; if(S.bitacora.disenos.placas){ S.bitacora.disenos.placas.splice(pdi,1); render(); await saveBit("disenos"); } return; }
+  if(a==="bit-pdf-dia"){ pdfDia(); return; }
+  if(a==="bit-pdf-semana"){ pdfSemana(); return; }
   // --- Calendario de contenidos ---
   if(a==="cal-open"){ S.calOpen=true; S.calLoading=true; S.calData=[]; S.calCtx=null; render(); await loadCalendarioFicha(d.id, d.name); S.calLoading=false; render(); return; }
   if(a==="cal-close"){ S.calOpen=false; S.calError=""; render(); return; }
@@ -2091,6 +2224,8 @@ async function onChange(e){
   else if(a==="bit-mat-texto"){ S.bitacora.materiales.materiales_texto=t.value; await saveBit("materiales"); }
   else if(a==="bit-cat-texto"){ S.bitacora.catalogos.acciones_texto=t.value; await saveBit("catalogos"); }
   else if(a==="bit-dis-cual"){ S.bitacora.disenos.placa_cual=t.value; await saveBit("disenos"); }
+  else if(a==="bit-placa-nombre"){ var pi=+d.i; if(S.bitacora.disenos.placas[pi]){ S.bitacora.disenos.placas[pi].nombre=t.value; await saveBit("disenos"); } }
+  else if(a==="bit-placa-file"){ var pf=t.files&&t.files[0]; if(pf){ await bitUploadPlaca(pf, +d.i); } }
   else if(a==="cal-ctx"){ if(!S.calCtx) S.calCtx={rubros:"",objetivos:"",reglas:"",tono:"",notas:""}; S.calCtx[d.k]=t.value; await saveContexto(); }
   else if(a==="cal-stock"){ S.calStockTexto=t.value; await saveStock(); render(); }
   else if(a==="cal-tema"){ S.calTema=t.value; await saveCalendarioDB(); }
