@@ -227,6 +227,7 @@ svg{display:inline-block;vertical-align:middle;flex:none}
 .cobro-hist{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px}
 .cobro-hrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--soft);padding:3px 0}
 @media(max-width:560px){ .dash{grid-template-columns:1fr} }
+.gasto-pausado{opacity:.6}
 .plata-sub{display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap}
 .plata-tab{background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:8px 16px;font-size:14px;font-weight:600;color:var(--soft);transition:.15s}
 .plata-tab:hover{border-color:var(--primary)}
@@ -531,7 +532,7 @@ var S={ phase:"loading", user:null, profile:null, priv:null, shared:null,
         umOpen:false, umClienteId:null, umNombre:"", umList:[], umSel:null, umLoading:false, umSaving:false, umActivos:[],
         cliOpen:false, cliScope:null, cliId:null,
         cobros:[], pagos:[], cobroHist:null,
-        plataSub:"cobros", cobroForm:null, gastos:[], gastoForm:null, ahorro:{meta:0,guardado:0},
+        plataSub:"cobros", cobroForm:null, gastos:[], gastoForm:null, ahorro:{meta:0,guardado:0}, metas:[],
         booxClienteId:null, booxSub:"resumen", booxPlanes:[], booxItems:[], booxLoading:false, booxPlanForm:null, booxItemForm:null, booxPend:0 };
 var root=document.getElementById("root");
 
@@ -619,6 +620,7 @@ async function loadAll(){
   await loadCobros();
   await loadGastos();
   await loadAhorro();
+  await loadMetas();
   await ensureBoox();
 
   await refreshClientes(true);
@@ -1504,10 +1506,42 @@ async function saveAhorro(){
   var res=await sb.from("ahorros").upsert({owner_id:S.user.id, meta:S.ahorro.meta||0, guardado:S.ahorro.guardado||0}, {onConflict:"owner_id"});
   if(res.error){ console.error(res.error); showError("No se pudo guardar el ahorro."); }
 }
+async function loadMetas(){
+  var r=await sb.from("metas_ahorro").select("*").eq("owner_id",S.user.id).order("prioridad",{ascending:true}).order("created_at",{ascending:true});
+  if(r.error){ console.error(r.error); S.metas=[]; } else S.metas=(r.data||[]).map(function(m){ return {id:m.id, nombre:m.nombre, monto_objetivo:+m.monto_objetivo||0, fecha_objetivo:m.fecha_objetivo||"", prioridad:m.prioridad||1, guardado:+m.guardado||0}; });
+}
+async function saveMeta(m){
+  var res=await sb.from("metas_ahorro").update({ nombre:m.nombre, monto_objetivo:m.monto_objetivo||0, fecha_objetivo:m.fecha_objetivo||null, prioridad:m.prioridad||1, guardado:m.guardado||0 }).eq("id",m.id);
+  if(res.error){ console.error(res.error); showError("No se pudo guardar la meta."); }
+}
+async function addMeta(){
+  var res=await sb.from("metas_ahorro").insert({ owner_id:S.user.id, nombre:"Nueva meta", monto_objetivo:0, prioridad:(S.metas.length+1), guardado:0 }).select().single();
+  if(res.error){ console.error(res.error); showError("No se pudo crear la meta."); return; }
+  await loadMetas(); render();
+}
+async function deleteMeta(id){
+  if(!window.confirm("¿Borrar esta meta de ahorro?")) return;
+  var res=await sb.from("metas_ahorro").delete().eq("id",id);
+  if(res.error){ console.error(res.error); showError("No se pudo borrar."); return; }
+  await loadMetas(); render();
+}
+function mesesHasta(fecha){
+  if(!fecha) return null;
+  var t=new Date(fecha+"T00:00:00"); if(isNaN(t.getTime())) return null;
+  var now=new Date();
+  var mm=(t.getFullYear()-now.getFullYear())*12+(t.getMonth()-now.getMonth());
+  return Math.max(1,mm);
+}
+function ritmoMeta(m){
+  var falta=Math.max(0,(m.monto_objetivo||0)-(m.guardado||0));
+  var mm=mesesHasta(m.fecha_objetivo);
+  return mm?Math.ceil(falta/mm):null;
+}
 function plata(n){ n=Math.round(+n||0); return "$"+n.toLocaleString("es-AR"); }
 function gastosMes(){
   var cm=mesKey(), tot=0;
   (S.gastos||[]).forEach(function(g){
+    if(g.activo===false) return;
     var f=(g.is_shared && g.reparte_5050)?0.5:1;
     var cuenta = (g.tipo_recurrencia==="mensual") || (g.tipo_recurrencia==="suelto" && g.fecha && mesKey(new Date(g.fecha+"T00:00:00"))===cm);
     if(cuenta) tot += (+g.monto||0)*f;
@@ -1689,10 +1723,12 @@ function cobroFormHTML(){
 function gastoCard(g){
   var f=(g.is_shared && g.reparte_5050)?0.5:1;
   var cuando = g.tipo_recurrencia==="mensual" ? ("Mensual"+(g.dia?(" · día "+g.dia):"")) : ("Suelto"+(g.fecha?(" · "+esc(g.fecha)):""));
-  return '<div class="cobro">'+
+  var pausado=(g.activo===false);
+  return '<div class="cobro'+(pausado?" gasto-pausado":"")+'">'+
     '<div class="cobro-top"><span class="cobro-name">'+esc(g.nombre)+'</span><span class="cobro-tools"><button class="ic-btn faint" data-act="gasto-edit" data-id="'+g.id+'">'+ic("pencil",13)+'</button><button class="ic-btn faint" data-act="gasto-del" data-id="'+g.id+'">'+ic("trash",13)+'</button></span></div>'+
-    '<div class="cli-chips"><span class="chip ghost">'+plata(g.monto)+'</span><span class="chip">'+cuando+'</span>'+(g.categoria?'<span class="chip">'+esc(g.categoria)+'</span>':'')+'</div>'+
+    '<div class="cli-chips"><span class="chip ghost">'+plata(g.monto)+'</span><span class="chip">'+cuando+'</span>'+(g.categoria?'<span class="chip">'+esc(g.categoria)+'</span>':'')+(pausado?'<span class="chip warn">pausado</span>':'')+'</div>'+
     (f<1?'<div class="cobro-parte">Tu parte (50%): <strong>'+plata((g.monto||0)*0.5)+'</strong></div>':'')+
+    '<div class="cobro-actions"><button class="ghost-btn sm" data-act="gasto-toggle" data-id="'+g.id+'">'+(pausado?"Activar":"Pausar")+'</button></div>'+
     '</div>';
 }
 function gastoFormHTML(){
@@ -1739,21 +1775,35 @@ function plataHTML(){
       '<section class="card"><div class="card-head"><span class="card-title">'+ic("user",16)+' Mis gastos</span><span class="card-sub">solo los ves vos</span></div><div class="cobro-grid">'+(gm2.map(gastoCard).join("")||'<div class="empty">Sin gastos propios.</div>')+'</div></section>';
   } else {
     var queda=d.entrado-gm;
-    var meta=S.ahorro.meta||0, guard=S.ahorro.guardado||0;
-    var pct=meta>0?Math.min(100,Math.round(guard/meta*100)):0;
-    cont = '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Resumen del mes</span><span class="card-sub">privado tuyo</span></div>'+
+    var resumen = '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Resumen del mes</span><span class="card-sub">privado tuyo</span></div>'+
       '<div class="dash"><div class="dash-box"><span class="dash-lbl">Ingresos cobrados (tu parte)</span><span class="dash-num" style="color:var(--bien)">'+plata(d.entrado)+'</span></div>'+
       '<div class="dash-box"><span class="dash-lbl">Gastos (tu parte)</span><span class="dash-num" style="color:var(--problema)">'+plata(gm)+'</span></div>'+
-      '<div class="dash-box"><span class="dash-lbl">Lo que te queda</span><span class="dash-num" style="color:'+(queda>=0?"var(--bien)":"var(--problema)")+'">'+plata(queda)+'</span></div></div></section>'+
-      '<section class="card"><div class="card-head"><span class="card-title">'+ic("cash",16)+' Mi ahorro</span></div>'+
-      '<p class="card-note">La meta y lo guardado los cargás vos a mano; la app no los calcula sola.</p>'+
-      '<div class="bar" style="margin-bottom:6px"><div class="bar-fill" style="width:'+pct+'%"></div></div>'+
-      '<div class="cobro-prox">'+plata(guard)+' de '+plata(meta)+' ('+pct+'%)</div>'+
-      '<div class="form-grid" style="margin-top:8px">'+
-      '<label class="bit-lbl">Meta de ahorro</label><input class="bit-in" id="ah-meta" type="number" data-act="ahorro-field" data-k="meta" value="'+(meta||"")+'" />'+
-      '<label class="bit-lbl">Cuánto llevo guardado</label><input class="bit-in" id="ah-guardado" type="number" data-act="ahorro-field" data-k="guardado" value="'+(guard||"")+'" />'+
-      '</div>'+
-      '<div class="cobro-inline" style="margin-top:8px"><input class="bit-in" id="ah-sumar" type="number" placeholder="sumar al guardado" /><button class="ghost-btn sm" data-act="ahorro-sumar">+ Sumar</button></div></section>';
+      '<div class="dash-box"><span class="dash-lbl">Lo que te queda</span><span class="dash-num" style="color:'+(queda>=0?"var(--bien)":"var(--problema)")+'">'+plata(queda)+'</span></div></div></section>';
+    var metasHtml=(S.metas||[]).map(function(m){
+      var pct=m.monto_objetivo>0?Math.min(100,Math.round(m.guardado/m.monto_objetivo*100)):0;
+      var ritmo=ritmoMeta(m), mm=mesesHasta(m.fecha_objetivo);
+      var completa=(m.guardado>=m.monto_objetivo && m.monto_objetivo>0);
+      var ritmoTxt = completa ? "¡Meta cumplida! 🎉" : (ritmo!=null ? ("Ritmo sugerido: "+plata(ritmo)+"/mes ("+mm+" mes"+(mm===1?"":"es")+" restantes)") : "Poné una fecha objetivo para ver el ritmo");
+      return '<section class="card">'+
+        '<div class="cobro-top"><span class="card-title">'+ic("cash",16)+' '+esc(m.nombre)+' <span class="cli-badge p-atencion">Prioridad '+(m.prioridad||1)+'</span></span>'+
+        '<span class="cobro-tools"><button class="ic-btn faint" data-act="meta-del" data-id="'+m.id+'">'+ic("trash",13)+'</button></span></div>'+
+        '<div class="bar" style="margin:8px 0 6px"><div class="bar-fill" style="width:'+pct+'%"></div></div>'+
+        '<div class="cobro-prox"><strong>'+plata(m.guardado)+'</strong> de '+plata(m.monto_objetivo)+' ('+pct+'%)</div>'+
+        '<div class="hint">'+esc(ritmoTxt)+(m.fecha_objetivo?(' · objetivo '+esc(m.fecha_objetivo)):'')+'</div>'+
+        '<div class="form-grid" style="margin-top:8px">'+
+        '<label class="bit-lbl">Nombre</label><input class="bit-in" data-act="meta-field" data-id="'+m.id+'" data-k="nombre" value="'+esc(m.nombre)+'" />'+
+        '<label class="bit-lbl">Monto objetivo</label><input class="bit-in" type="number" data-act="meta-field" data-id="'+m.id+'" data-k="monto_objetivo" value="'+(m.monto_objetivo||"")+'" />'+
+        '<label class="bit-lbl">Fecha objetivo</label><input class="bit-in" type="date" data-act="meta-field" data-id="'+m.id+'" data-k="fecha_objetivo" value="'+(m.fecha_objetivo||"")+'" />'+
+        '<label class="bit-lbl">Prioridad</label><input class="bit-in" type="number" data-act="meta-field" data-id="'+m.id+'" data-k="prioridad" value="'+(m.prioridad||1)+'" />'+
+        '<label class="bit-lbl">Cuánto llevo guardado</label><input class="bit-in" type="number" data-act="meta-field" data-id="'+m.id+'" data-k="guardado" value="'+(m.guardado||"")+'" />'+
+        '</div>'+
+        '<div class="cobro-inline" style="margin-top:8px"><input class="bit-in" id="meta-sum-'+m.id+'" type="number" placeholder="sumar a lo guardado" /><button class="ghost-btn sm" data-act="meta-sumar" data-id="'+m.id+'">+ Sumar</button></div>'+
+        '</section>';
+    }).join("") || '<div class="empty">Sin metas todavía.</div>';
+    cont = resumen +
+      '<div class="cal-actions"><button class="primary-btn sm" data-act="meta-add">'+ic("plus",15)+' Agregar meta</button></div>'+
+      '<p class="card-note">Lo guardado lo cargás vos a mano; la app no lo calcula sola. El ritmo sugerido sale del monto que falta y la fecha objetivo.</p>'+
+      metasHtml;
   }
   return dash+nav+cont;
 }
@@ -2129,6 +2179,10 @@ async function onClick(e){
   if(a==="gasto-form-save"){ guardarGasto(); return; }
   if(a==="gasto-form-cancel"){ S.gastoForm=null; render(); return; }
   if(a==="ahorro-sumar"){ var add=parseFloat(val("ah-sumar")); if(!add){ showError("Poné un monto."); return; } S.ahorro.guardado=(S.ahorro.guardado||0)+add; render(); await saveAhorro(); showOk("Ahorro actualizado ✓"); return; }
+  if(a==="meta-add"){ addMeta(); return; }
+  if(a==="meta-del"){ await deleteMeta(d.id); return; }
+  if(a==="meta-sumar"){ var ma=S.metas.filter(function(x){return x.id===d.id;})[0]; if(ma){ var inc=parseFloat(val("meta-sum-"+d.id)); if(!inc){ showError("Poné un monto."); return; } ma.guardado=(ma.guardado||0)+inc; render(); await saveMeta(ma); showOk("Meta actualizada ✓"); } return; }
+  if(a==="gasto-toggle"){ var gt=S.gastos.filter(function(x){return x.id===d.id;})[0]; if(gt){ var nuevo=(gt.activo===false); var r=await sb.from("gastos").update({activo:nuevo}).eq("id",gt.id); if(r.error){ showError("No se pudo cambiar."); return; } await loadGastos(); render(); } return; }
   // --- Boox ---
   if(a==="boox-sub"){ S.booxSub=d.sub; S.booxPlanForm=null; S.booxItemForm=null; render(); return; }
   if(a==="boox-plan-add"){ S.booxPlanForm={id:null,recurrencia:"mensual"}; render(); return; }
@@ -2237,6 +2291,7 @@ async function onChange(e){
   else if(a==="um-entrega"){ if(S.umSel){ S.umSel.fecha_entrega=t.value; render(); await saveUmanaSel(); } }
   else if(a==="um-upload"){ var uf=t.files&&t.files[0]; if(uf){ await umDoUpload(uf, d.campo); } }
   else if(a==="ahorro-field"){ S.ahorro[d.k]=parseFloat(t.value)||0; await saveAhorro(); render(); }
+  else if(a==="meta-field"){ var mf=S.metas.filter(function(x){return x.id===d.id;})[0]; if(mf){ if(d.k==="nombre") mf.nombre=t.value; else if(d.k==="fecha_objetivo") mf.fecha_objetivo=t.value; else mf[d.k]=parseFloat(t.value)||0; await saveMeta(mf); render(); } }
   else if(a==="boox-img"){ var bf=t.files&&t.files[0]; if(bf){ await booxUpload(bf); } }
 }
 
